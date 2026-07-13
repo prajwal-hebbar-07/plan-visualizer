@@ -68,7 +68,12 @@ export interface ChatChunk {
  */
 export async function* streamChat(
   messages: ChatMessage[],
-  opts: { model?: string; think?: boolean } = {},
+  opts: {
+    model?: string;
+    think?: boolean;
+    /** Ollama generation options, e.g. `{ num_predict: 3500 }` to cap length. */
+    options?: Record<string, unknown>;
+  } = {},
 ): AsyncGenerator<ChatChunk> {
   const stream = await ollama.chat({
     model: opts.model?.trim() || config.ollamaModel,
@@ -76,6 +81,7 @@ export async function* streamChat(
     stream: true,
     // Leave `think` undefined to use the model's default behavior.
     ...(opts.think === undefined ? {} : { think: opts.think }),
+    ...(opts.options ? { options: opts.options } : {}),
   });
 
   for await (const part of stream) {

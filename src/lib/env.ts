@@ -13,6 +13,15 @@ export const config = {
    * minimax-m2 was retired 2026-06-16; minimax-m2.7 is the current MiniMax.
    */
   ollamaModel: process.env.OLLAMA_MODEL?.trim() || "minimax-m2.7:cloud",
+  /**
+   * Root directory the file picker is allowed to browse and write comments
+   * into. All plan paths are resolved and confined to this root (no escaping
+   * via `..`). Defaults to the plan training-data corpus so the app is useful
+   * out of the box; point it at your own `plans/` folder via env.
+   */
+  plansDir:
+    process.env.PLANS_DIR?.trim() ||
+    "/Users/hebbar/chaotic-thoughts/opensource/dotfiles/plan-training-data",
 } as const;
 
 /** Whether a model tag refers to an Ollama Cloud model. */
