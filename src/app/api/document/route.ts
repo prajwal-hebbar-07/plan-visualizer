@@ -48,13 +48,22 @@ async function readDocument(filePath: string): Promise<DocumentPayload> {
   };
 }
 
-function formatComment(comment: string) {
+function formatComment(comment: string, selection?: string) {
   const safeComment = comment.replace(/--+/g, "—").trim();
+  if (selection) {
+    const quotedSelection = selection
+      .replace(/--+/g, "—")
+      .trim()
+      .split("\n")
+      .map((line) => `> ${line}`)
+      .join("\n");
+    return `<!-- @me:\nRegarding:\n${quotedSelection}\n\n${safeComment}\n-->`;
+  }
   if (!safeComment.includes("\n")) return `<!-- @me: ${safeComment} -->`;
   return `<!-- @me:\n${safeComment}\n-->`;
 }
 
-function insertComment(content: string, endLine: number, comment: string) {
+function insertComment(content: string, endLine: number, comment: string, selection?: string) {
   const newline = content.includes("\r\n") ? "\r\n" : "\n";
   const hadFinalNewline = content.endsWith("\n");
   const lines = content.replace(/\r\n?/g, "\n").split("\n");
@@ -63,7 +72,7 @@ function insertComment(content: string, endLine: number, comment: string) {
   const insertionIndex = endLine;
   const additions: string[] = [];
   if (insertionIndex > 0 && lines[insertionIndex - 1]?.trim()) additions.push("");
-  additions.push(formatComment(comment));
+  additions.push(formatComment(comment, selection));
   if (lines[insertionIndex]?.trim()) additions.push("");
   lines.splice(insertionIndex, 0, ...additions);
 
@@ -91,6 +100,7 @@ export async function PATCH(request: Request) {
       startLine?: unknown;
       endLine?: unknown;
       anchor?: unknown;
+      selection?: unknown;
       expectedMtimeMs?: unknown;
     };
     const filePath = await resolvePlanPath(body.path);
@@ -100,6 +110,12 @@ export async function PATCH(request: Request) {
     }
     if (body.comment.length > 4000) {
       return errorResponse("Comments are limited to 4,000 characters.", 400);
+    }
+    if (body.selection !== undefined && typeof body.selection !== "string") {
+      return errorResponse("The selected text is invalid.", 400);
+    }
+    if (typeof body.selection === "string" && body.selection.length > 2000) {
+      return errorResponse("Text selections are limited to 2,000 characters.", 400);
     }
     if (
       !Number.isInteger(body.startLine) ||
@@ -138,6 +154,7 @@ export async function PATCH(request: Request) {
       current.content,
       body.endLine as number,
       body.comment,
+      typeof body.selection === "string" ? body.selection.trim() : undefined,
     );
     const currentStat = await stat(filePath);
     temporaryPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;

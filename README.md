@@ -48,11 +48,17 @@ file with `http://localhost:4823/?path=/absolute/path/to/plan.md`.
 The interface follows the system color scheme initially; use the header toggle
 to choose and remember light or dark mode explicitly.
 
-Hover over any rendered block to add a comment. Saving inserts a nearby marker:
+Hover over any rendered block to add a general comment, or select rendered text
+and use the floating **Comment** action for selection-specific feedback. Saving
+inserts a nearby marker:
 
 ```md
 <!-- @me: explain the rollback behavior for this migration -->
 ```
+
+Selection comments include the quoted text under a structured `Regarding:`
+section inside the same marker, so plan-review tooling can resolve the note with
+precise context while still discovering it as a normal `@me` comment.
 
 Writes are atomic and guarded by the file modification time and selected source
 text. If the file changes in another editor, the app asks you to reload instead

@@ -17,6 +17,14 @@ type DocumentData = {
   size: number;
 };
 
+type SelectionPrompt = {
+  target: ContentBlock;
+  text: string;
+  x: number;
+  y: number;
+  placement: "above" | "below";
+};
+
 type IconName =
   | "arrow"
   | "check"
@@ -72,6 +80,7 @@ function CommentCard({ comment, onNavigate }: { comment: CommentBlock; onNavigat
         <span>{comment.section}</span>
         <span>Line {comment.startLine}</span>
       </span>
+      {comment.selection && <span className="review-card-selection">“{comment.selection}”</span>}
       <span className="review-card-text">{comment.text}</span>
       <span className="review-status"><span /> Pending review</span>
     </button>
@@ -100,6 +109,8 @@ export default function Home() {
   const [picking, setPicking] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
   const [selectedBlock, setSelectedBlock] = useState<ContentBlock | null>(null);
+  const [selectedText, setSelectedText] = useState("");
+  const [selectionPrompt, setSelectionPrompt] = useState<SelectionPrompt | null>(null);
   const [comment, setComment] = useState("");
   const [saving, setSaving] = useState(false);
   const [commentError, setCommentError] = useState<string | null>(null);
@@ -134,6 +145,8 @@ export default function Home() {
       setDocument(data);
       setPathInput(data.path);
       setSelectedBlock(null);
+      setSelectedText("");
+      setSelectionPrompt(null);
       setComment("");
       window.localStorage.setItem("plan-visualizer:last-path", data.path);
     } catch (error) {
@@ -162,6 +175,8 @@ export default function Home() {
       }
       if (event.key === "Escape" && selectedBlock) {
         setSelectedBlock(null);
+        setSelectedText("");
+        setSelectionPrompt(null);
         setComment("");
         setCommentError(null);
       }
@@ -169,6 +184,98 @@ export default function Home() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [selectedBlock]);
+
+  useEffect(() => {
+    if (!document || !parsed) return;
+
+    let frame = 0;
+    const updateSelection = (event?: Event) => {
+      const eventTarget = event?.target;
+      if (
+        eventTarget instanceof Element &&
+        eventTarget.closest(".selection-comment-action, .review-panel")
+      ) return;
+
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        const selection = window.getSelection();
+        if (!selection || selection.isCollapsed || !selection.rangeCount) {
+          setSelectionPrompt(null);
+          return;
+        }
+
+        const text = selection.toString().replace(/\u00a0/g, " ").trim();
+        if (!text) {
+          setSelectionPrompt(null);
+          return;
+        }
+
+        const range = selection.getRangeAt(0);
+        const elementForNode = (node: Node) =>
+          node instanceof Element ? node : node.parentElement;
+        const startElement = elementForNode(range.startContainer)?.closest<HTMLElement>(
+          ".reviewable-block[data-start-line]",
+        );
+        const endElement = elementForNode(range.endContainer)?.closest<HTMLElement>(
+          ".reviewable-block[data-end-line]",
+        );
+        if (!startElement || !endElement) {
+          setSelectionPrompt(null);
+          return;
+        }
+
+        const startLine = Number(startElement.dataset.startLine);
+        const endLine = Number(endElement.dataset.endLine);
+        const firstLine = Math.min(startLine, endLine);
+        const lastLine = Math.max(startLine, endLine);
+        const baseBlock = parsed.blocks.find(
+          (block): block is ContentBlock =>
+            block.kind === "content" && block.startLine === firstLine,
+        );
+        if (!baseBlock || !Number.isInteger(firstLine) || !Number.isInteger(lastLine)) {
+          setSelectionPrompt(null);
+          return;
+        }
+
+        const source = document.content
+          .replace(/\r\n?/g, "\n")
+          .split("\n")
+          .slice(firstLine - 1, lastLine)
+          .join("\n");
+        const rect = range.getBoundingClientRect();
+        const placement = rect.top >= 54 ? "above" : "below";
+        const x = Math.min(window.innerWidth - 68, Math.max(68, rect.left + rect.width / 2));
+        const y = placement === "above" ? rect.top - 44 : rect.bottom + 10;
+
+        setSelectionPrompt({
+          target: {
+            ...baseBlock,
+            source,
+            startLine: firstLine,
+            endLine: lastLine,
+          },
+          text: text.length > 2000 ? `${text.slice(0, 1999)}…` : text,
+          x,
+          y,
+          placement,
+        });
+      });
+    };
+
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.shiftKey) updateSelection(event);
+    };
+    const hideOnScroll = () => setSelectionPrompt(null);
+    window.document.addEventListener("pointerup", updateSelection);
+    window.document.addEventListener("keyup", handleKeyUp);
+    window.addEventListener("scroll", hideOnScroll, true);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.document.removeEventListener("pointerup", updateSelection);
+      window.document.removeEventListener("keyup", handleKeyUp);
+      window.removeEventListener("scroll", hideOnScroll, true);
+    };
+  }, [document, parsed]);
 
   const submitPath = (event: FormEvent) => {
     event.preventDefault();
@@ -199,8 +306,10 @@ export default function Home() {
     }
   }, [openDocument, picking]);
 
-  const chooseBlock = (block: ContentBlock) => {
+  const chooseBlock = (block: ContentBlock, selection = "") => {
     setSelectedBlock(block);
+    setSelectedText(selection);
+    setSelectionPrompt(null);
     setComment("");
     setCommentError(null);
     window.setTimeout(() => commentRef.current?.focus(), 80);
@@ -220,6 +329,7 @@ export default function Home() {
           startLine: selectedBlock.startLine,
           endLine: selectedBlock.endLine,
           anchor: selectedBlock.source,
+          selection: selectedText || undefined,
           expectedMtimeMs: document.mtimeMs,
         }),
       });
@@ -230,6 +340,8 @@ export default function Home() {
       const data = (await response.json()) as DocumentData;
       setDocument(data);
       setSelectedBlock(null);
+      setSelectedText("");
+      setSelectionPrompt(null);
       setComment("");
       setToast("Comment saved to the plan");
       window.setTimeout(() => setToast(null), 2600);
@@ -238,7 +350,7 @@ export default function Home() {
     } finally {
       setSaving(false);
     }
-  }, [comment, document, saving, selectedBlock]);
+  }, [comment, document, saving, selectedBlock, selectedText]);
 
   const reload = useCallback(async () => {
     if (!document) return;
@@ -362,14 +474,18 @@ export default function Home() {
                 <p className="eyebrow">Implementation plan</p>
                 <h1>{title}</h1>
                 <div className="paper-rule"><span /></div>
-                <p className="paper-hint">Hover over any block and select the comment icon to leave feedback in context.</p>
+                <p className="paper-hint">Hover over a block for a general note, or select text for a precise comment.</p>
               </div>
 
               <div className="markdown-body">
                 {parsed?.blocks.map((block) => block.kind === "content" && block.id === titleBlock?.id ? null : block.kind === "comment" ? (
                   <div className="inline-comment" id={block.id} key={block.id}>
                     <span className="inline-comment-icon"><Icon name="comment" size={16} /></span>
-                    <div><span className="inline-comment-label">Your review note</span><p>{block.text}</p></div>
+                    <div>
+                      <span className="inline-comment-label">Your review note</span>
+                      {block.selection && <blockquote className="inline-selection">“{block.selection}”</blockquote>}
+                      <p>{block.text}</p>
+                    </div>
                     <span className="review-status"><span /> Pending review</span>
                   </div>
                 ) : (
@@ -377,6 +493,8 @@ export default function Home() {
                     className={`reviewable-block${selectedBlock?.id === block.id ? " is-selected" : ""}`}
                     id={block.id}
                     key={`${block.id}-${block.startLine}`}
+                    data-start-line={block.startLine}
+                    data-end-line={block.endLine}
                   >
                     <MarkdownBlock block={block} />
                     <button
@@ -399,10 +517,11 @@ export default function Home() {
               <div className="comment-composer">
                 <div className="composer-header">
                   <div><span className="composer-kicker">New comment</span><strong>{selectedBlock.section}</strong></div>
-                  <button type="button" onClick={() => { setSelectedBlock(null); setComment(""); setCommentError(null); }} aria-label="Close composer"><Icon name="x" size={17} /></button>
+                  <button type="button" onClick={() => { setSelectedBlock(null); setSelectedText(""); setComment(""); setCommentError(null); }} aria-label="Close composer"><Icon name="x" size={17} /></button>
                 </div>
-                <blockquote>{selectedBlock.heading?.text ?? selectedBlock.source.replace(/[#>*_`~]/g, "").slice(0, 150)}</blockquote>
-                <label htmlFor="comment">What should change?</label>
+                {selectedText && <span className="selection-context-label">Selected text</span>}
+                <blockquote className={selectedText ? "composer-selection" : undefined}>{selectedText || selectedBlock.heading?.text || selectedBlock.source.replace(/[#>*_`~]/g, "").slice(0, 150)}</blockquote>
+                <label htmlFor="comment">{selectedText ? "What should change about this selection?" : "What should change?"}</label>
                 <textarea
                   id="comment"
                   ref={commentRef}
@@ -418,7 +537,7 @@ export default function Home() {
                   rows={7}
                   maxLength={4000}
                 />
-                <div className="composer-meta"><span>Saved as an <code>@me</code> review marker</span><span>{comment.length}/4000</span></div>
+                <div className="composer-meta"><span>{selectedText ? "Selection + " : ""}<code>@me</code> review marker</span><span>{comment.length}/4000</span></div>
                 {commentError && <div className="composer-error" role="alert">{commentError}</div>}
                 <button className="save-comment" type="button" onClick={() => void saveComment()} disabled={saving || !comment.trim()}>
                   {saving ? "Saving to plan…" : "Save comment to plan"}
@@ -456,6 +575,72 @@ export default function Home() {
             )}
           </aside>
         </div>
+      )}
+
+      {selectionPrompt && !selectedBlock && (
+        <button
+          className="selection-comment-action"
+          type="button"
+          style={{
+            position: "fixed",
+            zIndex: 70,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 7,
+            left: selectionPrompt.x,
+            top: selectionPrompt.y,
+            height: 34,
+            minWidth: 88,
+            padding: "0 13px",
+            overflow: "visible",
+            border: "1px solid var(--line)",
+            borderRadius: 999,
+            background: "var(--paper)",
+            boxShadow: "0 10px 30px rgba(0, 0, 0, .2), 0 1px 2px rgba(0, 0, 0, .12)",
+            color: "var(--forest)",
+            fontSize: 11,
+            fontWeight: 750,
+            lineHeight: 1,
+            letterSpacing: "-.01em",
+            whiteSpace: "nowrap",
+            cursor: "pointer",
+            transform: "translateX(-50%)",
+          }}
+          onPointerDown={(event) => event.preventDefault()}
+          onClick={() => {
+            chooseBlock(selectionPrompt.target, selectionPrompt.text);
+            window.getSelection()?.removeAllRanges();
+          }}
+        >
+          <span className="selection-action-icon"><Icon name="comment" size={14} /></span>
+          <span>Comment</span>
+          <span
+            aria-hidden="true"
+            className={`selection-action-caret ${selectionPrompt.placement}`}
+            style={{
+              position: "absolute",
+              left: "50%",
+              width: 8,
+              height: 8,
+              background: "var(--paper)",
+              pointerEvents: "none",
+              ...(selectionPrompt.placement === "above"
+                ? {
+                    bottom: -5,
+                    borderRight: "1px solid var(--line)",
+                    borderBottom: "1px solid var(--line)",
+                    transform: "translateX(-50%) rotate(45deg)",
+                  }
+                : {
+                    top: -5,
+                    borderTop: "1px solid var(--line)",
+                    borderLeft: "1px solid var(--line)",
+                    transform: "translateX(-50%) rotate(45deg)",
+                  }),
+            }}
+          />
+        </button>
       )}
 
       {toast && <div className="toast" role="status"><Icon name="check" size={16} /> {toast}</div>}

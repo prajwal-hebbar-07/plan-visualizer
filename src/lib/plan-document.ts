@@ -16,6 +16,7 @@ export type CommentBlock = {
   kind: "comment";
   id: string;
   text: string;
+  selection?: string;
   startLine: number;
   endLine: number;
   section: string;
@@ -68,10 +69,26 @@ function readComment(lines: string[], start: number) {
   const inner = raw.slice(raw.indexOf("<!--") + 4, raw.lastIndexOf("-->"));
   if (!/^\s*@me\b/i.test(inner)) return null;
 
-  return {
-    end,
-    text: inner.replace(/^\s*@me\s*:?\s*/i, "").trim(),
-  };
+  const content = inner.replace(/^\s*@me\s*:?\s*/i, "").trim();
+  const contentLines = content.split("\n");
+  let selection: string | undefined;
+  let text = content;
+
+  if (contentLines[0]?.trim() === "Regarding:") {
+    const quotedLines: string[] = [];
+    let cursor = 1;
+    while (cursor < contentLines.length && contentLines[cursor].startsWith(">")) {
+      quotedLines.push(contentLines[cursor].replace(/^>\s?/, ""));
+      cursor += 1;
+    }
+    while (cursor < contentLines.length && !contentLines[cursor].trim()) cursor += 1;
+    if (quotedLines.length && cursor < contentLines.length) {
+      selection = quotedLines.join("\n").trim();
+      text = contentLines.slice(cursor).join("\n").trim();
+    }
+  }
+
+  return { end, text, selection };
 }
 
 function isFence(line: string) {
@@ -99,6 +116,7 @@ export function parsePlan(content: string): ParsedPlan {
         kind: "comment",
         id: `comment-${i + 1}`,
         text: comment.text,
+        selection: comment.selection,
         startLine: i + 1,
         endLine: comment.end + 1,
         section,

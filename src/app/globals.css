@@ -443,6 +443,7 @@ html[data-theme="dark"] .theme-icon-sun { display: grid; }
 .paper-hint { margin: 0; color: #969b95; font-family: Georgia, 'Times New Roman', serif; font-size: 12px; font-style: italic; }
 
 .markdown-body { color: #474c47; font-family: Georgia, 'Times New Roman', serif; font-size: 14px; line-height: 1.75; }
+.markdown-body ::selection { background: #cfe4d7; color: #1f382b; }
 .reviewable-block { position: relative; scroll-margin-top: 100px; transition: background .15s ease, box-shadow .15s ease; }
 .reviewable-block:not(:has(h1, h2, h3, h4, h5, h6)) { margin: 15px 0; }
 .reviewable-block.is-selected { margin-inline: -16px; padding-inline: 16px; border-radius: 6px; background: #f4f8f5; box-shadow: inset 2px 0 var(--forest); }
@@ -511,6 +512,7 @@ html[data-theme="dark"] .theme-icon-sun { display: grid; }
 }
 .inline-comment-icon { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: #f7e5d0; color: var(--amber); }
 .inline-comment-label { display: block; color: #a0663b; font-family: Arial, Helvetica, sans-serif; font-size: 8px; font-weight: 800; letter-spacing: .11em; text-transform: uppercase; }
+.inline-selection { margin: 7px 0 6px; padding-left: 9px; border-left: 2px solid #d9ae85; color: #8a674d; font-size: 10px; font-style: italic; line-height: 1.5; }
 .inline-comment p { margin: 3px 0 0; color: #6f5848; font-size: 12px; line-height: 1.55; }
 
 .review-panel {
@@ -542,6 +544,7 @@ html[data-theme="dark"] .theme-icon-sun { display: grid; }
 .review-card:hover { border-color: #c6d1c9; box-shadow: 0 5px 15px rgba(40, 50, 42, .05); }
 .review-card-topline { display: flex; justify-content: space-between; color: #9b9f9a; font-size: 8px; text-transform: uppercase; }
 .review-card-topline span:first-child { overflow: hidden; max-width: 150px; color: #66766c; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.review-card-selection { display: -webkit-box; overflow: hidden; margin-top: 9px; padding-left: 8px; border-left: 2px solid #d8b491; color: #9a7659; font-family: Georgia, 'Times New Roman', serif; font-size: 9px; font-style: italic; line-height: 1.45; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .review-card-text { display: -webkit-box; overflow: hidden; margin: 9px 0 10px; color: #555b55; font-family: Georgia, 'Times New Roman', serif; font-size: 11px; line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
 .review-status { display: inline-flex; align-items: center; gap: 5px; color: #9b785a; font-family: Arial, Helvetica, sans-serif; font-size: 7px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; white-space: nowrap; }
 .review-status span { width: 5px; height: 5px; border-radius: 50%; background: #cb8a50; }
@@ -560,7 +563,9 @@ html[data-theme="dark"] .theme-icon-sun { display: grid; }
 .composer-header { display: flex; justify-content: space-between; gap: 12px; padding-bottom: 18px; border-bottom: 1px solid var(--line); }
 .composer-header > div { display: flex; min-width: 0; flex-direction: column; gap: 7px; }
 .composer-header strong { overflow: hidden; font-family: Georgia, 'Times New Roman', serif; font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
+.selection-context-label { margin-top: 18px; color: #789181; font-size: 8px; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; }
 .comment-composer blockquote { display: -webkit-box; overflow: hidden; margin: 18px 0 22px; padding: 11px 13px; border-left: 2px solid #9cb2a5; background: #f0f3ef; color: #788079; font-family: Georgia, 'Times New Roman', serif; font-size: 10px; font-style: italic; line-height: 1.55; -webkit-box-orient: vertical; -webkit-line-clamp: 4; }
+.comment-composer blockquote.composer-selection { margin-top: 7px; border-left-color: #6e9680; background: #edf4ef; color: #526c5c; -webkit-line-clamp: 6; }
 .comment-composer label { margin-bottom: 8px; color: #545b54; font-size: 10px; font-weight: 700; }
 .comment-composer textarea { width: 100%; min-height: 150px; resize: vertical; padding: 12px; border: 1px solid #d9ddd7; border-radius: 8px; background: white; color: #414741; outline: 0; font-family: Georgia, 'Times New Roman', serif; font-size: 12px; line-height: 1.6; }
 .comment-composer textarea:focus { border-color: #799a87; box-shadow: 0 0 0 3px rgba(70, 120, 91, .08); }
@@ -592,7 +597,34 @@ html[data-theme="dark"] .theme-icon-sun { display: grid; }
   animation: toast-in .2s ease both;
 }
 
+.selection-comment-action {
+  position: fixed;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  min-width: 88px;
+  padding: 0 13px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--paper);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .2), 0 1px 2px rgba(0, 0, 0, .12);
+  color: var(--forest);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: -.01em;
+  line-height: 1;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  animation: selection-action-in .12s ease both;
+}
+.selection-action-icon { display: grid; place-items: center; }
+.selection-comment-action:hover { border-color: #89a995; box-shadow: 0 12px 34px rgba(0, 0, 0, .24), 0 1px 2px rgba(0, 0, 0, .12); }
+
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
+@keyframes selection-action-in { from { opacity: 0; transform: translate(-50%, 4px) scale(.96); } }
 
 html[data-theme="dark"] .topbar {
   background: rgba(15, 18, 16, .92);
@@ -691,6 +723,7 @@ html[data-theme="dark"] .paper-rule::after { background: #303732; }
 html[data-theme="dark"] .paper-hint { color: #777f79; }
 
 html[data-theme="dark"] .markdown-body { color: #b9c1bb; }
+html[data-theme="dark"] .markdown-body ::selection { background: #315b46; color: #edf5f0; }
 html[data-theme="dark"] .reviewable-block.is-selected { background: #1c2821; }
 html[data-theme="dark"] .block-comment-button {
   border-color: #3a463e;
@@ -725,6 +758,7 @@ html[data-theme="dark"] .markdown-body th + th { border-left-color: #343a36; }
 html[data-theme="dark"] .inline-comment { border-color: #5a4330; }
 html[data-theme="dark"] .inline-comment-icon { background: #3b2c20; color: #e2a36f; }
 html[data-theme="dark"] .inline-comment-label { color: #d09260; }
+html[data-theme="dark"] .inline-selection { border-left-color: #765638; color: #c39b79; }
 html[data-theme="dark"] .inline-comment p { color: #c2a78f; }
 html[data-theme="dark"] .review-status { color: #c19470; }
 
@@ -737,6 +771,7 @@ html[data-theme="dark"] .review-card {
 html[data-theme="dark"] .review-card:hover { border-color: #435249; box-shadow: 0 7px 18px rgba(0, 0, 0, .16); }
 html[data-theme="dark"] .review-card-topline { color: #707a73; }
 html[data-theme="dark"] .review-card-topline span:first-child { color: #90a096; }
+html[data-theme="dark"] .review-card-selection { border-left-color: #73553d; color: #c09a7b; }
 html[data-theme="dark"] .review-card-text { color: #bbc3bd; }
 html[data-theme="dark"] .empty-reviews { border-color: #303832; }
 html[data-theme="dark"] .empty-reviews > span { background: #1d251f; color: #7b9987; }
@@ -748,7 +783,9 @@ html[data-theme="dark"] .review-help strong,
 html[data-theme="dark"] .review-help code { color: #88b39a; }
 
 html[data-theme="dark"] .composer-header strong { color: #dce2dd; }
+html[data-theme="dark"] .selection-context-label { color: #80aa91; }
 html[data-theme="dark"] .comment-composer blockquote { border-left-color: #536f5e; background: #1b211d; color: #929d95; }
+html[data-theme="dark"] .comment-composer blockquote.composer-selection { border-left-color: #568069; background: #18251e; color: #9db5a6; }
 html[data-theme="dark"] .comment-composer label { color: #b9c1bb; }
 html[data-theme="dark"] .comment-composer textarea {
   border-color: #343c36;
@@ -768,6 +805,13 @@ html[data-theme="dark"] .toast {
   box-shadow: 0 12px 32px rgba(0, 0, 0, .3);
   color: #8ec8a5;
 }
+html[data-theme="dark"] .selection-comment-action {
+  border-color: #3b5948;
+  background: #1b2921;
+  box-shadow: 0 9px 28px rgba(0, 0, 0, .35);
+  color: #94caab;
+}
+html[data-theme="dark"] .selection-comment-action:hover { border-color: #5b866d; }
 
 @media (max-width: 1160px) {
   .workspace { grid-template-columns: 190px minmax(500px, 760px) 265px; }
