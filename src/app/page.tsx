@@ -1,244 +1,441 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import {
+  ContentBlock,
+  parsePlan,
+  type CommentBlock,
+} from "@/lib/plan-document";
 
-interface Health {
-  ok: boolean;
-  host: string;
-  model: string;
-  cloud: boolean;
-  localModels?: string[];
-  error?: string;
+type DocumentData = {
+  path: string;
+  content: string;
+  mtimeMs: number;
+  size: number;
+};
+
+type IconName =
+  | "arrow"
+  | "check"
+  | "comment"
+  | "document"
+  | "folder"
+  | "refresh"
+  | "sparkle"
+  | "x";
+
+function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
+  const paths: Record<IconName, React.ReactNode> = {
+    arrow: <><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></>,
+    check: <path d="m5 12 4 4L19 6"/>,
+    comment: <><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/><path d="M8 9h8M8 13h5"/></>,
+    document: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 13h8M8 17h6"/></>,
+    folder: <><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></>,
+    refresh: <><path d="M20 7h-5V2"/><path d="M20 2v5h-5M20 7a8 8 0 1 0 1 5"/></>,
+    sparkle: <><path d="m12 3-1.2 3.8L7 8l3.8 1.2L12 13l1.2-3.8L17 8l-3.8-1.2Z"/><path d="m5 14-.7 2.3L2 17l2.3.7L5 20l.7-2.3L8 17l-2.3-.7Z"/></>,
+    x: <><path d="m6 6 12 12M18 6 6 18"/></>,
+  };
+
+  return (
+    <svg aria-hidden="true" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      {paths[name]}
+    </svg>
+  );
 }
 
-type StreamEvent =
-  | { type: "thinking"; text: string }
-  | { type: "content"; text: string }
-  | { type: "done" }
-  | { type: "error"; error: string };
+async function readApiError(response: Response) {
+  const body = (await response.json().catch(() => null)) as { error?: string; code?: string } | null;
+  return { message: body?.error ?? `Request failed (${response.status})`, code: body?.code };
+}
 
-async function fetchHealth(): Promise<Health> {
-  try {
-    const res = await fetch("/api/health", { cache: "no-store" });
-    return (await res.json()) as Health;
-  } catch (e) {
-    return {
-      ok: false,
-      host: "",
-      model: "",
-      cloud: false,
-      error: e instanceof Error ? e.message : String(e),
-    };
-  }
+function filename(filePath: string) {
+  return filePath.split(/[\\/]/).pop() || filePath;
+}
+
+function dirname(filePath: string) {
+  const parts = filePath.split(/[\\/]/);
+  parts.pop();
+  return parts.join("/") || "/";
+}
+
+function CommentCard({ comment, onNavigate }: { comment: CommentBlock; onNavigate?: () => void }) {
+  return (
+    <button className="review-card" onClick={onNavigate} type="button">
+      <span className="review-card-topline">
+        <span>{comment.section}</span>
+        <span>Line {comment.startLine}</span>
+      </span>
+      <span className="review-card-text">{comment.text}</span>
+      <span className="review-status"><span /> Pending review</span>
+    </button>
+  );
+}
+
+function MarkdownBlock({ block }: { block: ContentBlock }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        a: ({ children, ...props }) => <a {...props} target="_blank" rel="noreferrer">{children}</a>,
+        table: ({ children, ...props }) => <div className="table-scroll"><table {...props}>{children}</table></div>,
+        input: ({ ...props }) => <input {...props} readOnly />,
+      }}
+    >
+      {block.source}
+    </ReactMarkdown>
+  );
 }
 
 export default function Home() {
-  const [health, setHealth] = useState<Health | null>(null);
-  const [healthLoading, setHealthLoading] = useState(true);
+  const [pathInput, setPathInput] = useState("");
+  const [document, setDocument] = useState<DocumentData | null>(null);
+  const [opening, setOpening] = useState(false);
+  const [picking, setPicking] = useState(false);
+  const [openError, setOpenError] = useState<string | null>(null);
+  const [selectedBlock, setSelectedBlock] = useState<ContentBlock | null>(null);
+  const [comment, setComment] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [commentError, setCommentError] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const pathRef = useRef<HTMLInputElement>(null);
+  const commentRef = useRef<HTMLTextAreaElement>(null);
 
-  const [prompt, setPrompt] = useState(
-    "In one sentence, confirm you're reachable and name the model you are.",
+  const parsed = useMemo(
+    () => (document ? parsePlan(document.content) : null),
+    [document],
   );
-  const [thinking, setThinking] = useState("");
-  const [answer, setAnswer] = useState("");
-  const [running, setRunning] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [showThinking, setShowThinking] = useState(true);
 
-  const recheckHealth = useCallback(() => {
-    setHealthLoading(true);
-    fetchHealth().then((h) => {
-      setHealth(h);
-      setHealthLoading(false);
-    });
+  const openDocument = useCallback(async (requestedPath: string) => {
+    const cleanPath = requestedPath.trim();
+    if (!cleanPath) {
+      setOpenError("Enter the absolute path to a plan file.");
+      pathRef.current?.focus();
+      return;
+    }
+
+    setPathInput(cleanPath);
+    setOpening(true);
+    setOpenError(null);
+    try {
+      const response = await fetch("/api/document", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: cleanPath }),
+      });
+      if (!response.ok) throw new Error((await readApiError(response)).message);
+      const data = (await response.json()) as DocumentData;
+      setDocument(data);
+      setPathInput(data.path);
+      setSelectedBlock(null);
+      setComment("");
+      window.localStorage.setItem("plan-visualizer:last-path", data.path);
+    } catch (error) {
+      setOpenError(error instanceof Error ? error.message : "Unable to open the plan.");
+    } finally {
+      setOpening(false);
+    }
   }, []);
 
   useEffect(() => {
-    let active = true;
-    fetchHealth().then((h) => {
-      if (!active) return;
-      setHealth(h);
-      setHealthLoading(false);
-    });
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  const run = useCallback(async () => {
-    if (!prompt.trim() || running) return;
-    setRunning(true);
-    setError(null);
-    setThinking("");
-    setAnswer("");
-    try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: [{ role: "user", content: prompt }] }),
-      });
-      if (!res.ok || !res.body) {
-        const msg = await res.text().catch(() => res.statusText);
-        throw new Error(msg || `Request failed (${res.status})`);
-      }
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        let nl: number;
-        while ((nl = buf.indexOf("\n")) >= 0) {
-          const line = buf.slice(0, nl).trim();
-          buf = buf.slice(nl + 1);
-          if (!line) continue;
-          const evt = JSON.parse(line) as StreamEvent;
-          if (evt.type === "thinking") setThinking((t) => t + evt.text);
-          else if (evt.type === "content") setAnswer((a) => a + evt.text);
-          else if (evt.type === "error") throw new Error(evt.error);
-        }
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setRunning(false);
+    const queryPath = new URLSearchParams(window.location.search).get("path");
+    const savedPath = window.localStorage.getItem("plan-visualizer:last-path");
+    const initialPath = queryPath || savedPath;
+    if (initialPath) {
+      const timer = window.setTimeout(() => void openDocument(initialPath), 0);
+      return () => window.clearTimeout(timer);
     }
-  }, [prompt, running]);
+  }, [openDocument]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "o") {
+        event.preventDefault();
+        pathRef.current?.focus();
+        pathRef.current?.select();
+      }
+      if (event.key === "Escape" && selectedBlock) {
+        setSelectedBlock(null);
+        setComment("");
+        setCommentError(null);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectedBlock]);
+
+  const submitPath = (event: FormEvent) => {
+    event.preventDefault();
+    void openDocument(pathInput);
+  };
+
+  const pickPlan = useCallback(async () => {
+    if (picking) return;
+    setPicking(true);
+    setOpenError(null);
+    try {
+      const response = await fetch("/api/document/pick", { method: "POST" });
+      if (response.status === 204) return;
+      if (!response.ok) throw new Error((await readApiError(response)).message);
+      const data = (await response.json()) as { path: string };
+      await openDocument(data.path);
+    } catch (error) {
+      setOpenError(error instanceof Error ? error.message : "Unable to choose a plan.");
+    } finally {
+      setPicking(false);
+    }
+  }, [openDocument, picking]);
+
+  const chooseBlock = (block: ContentBlock) => {
+    setSelectedBlock(block);
+    setComment("");
+    setCommentError(null);
+    window.setTimeout(() => commentRef.current?.focus(), 80);
+  };
+
+  const saveComment = useCallback(async () => {
+    if (!document || !selectedBlock || !comment.trim() || saving) return;
+    setSaving(true);
+    setCommentError(null);
+    try {
+      const response = await fetch("/api/document", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          path: document.path,
+          comment,
+          startLine: selectedBlock.startLine,
+          endLine: selectedBlock.endLine,
+          anchor: selectedBlock.source,
+          expectedMtimeMs: document.mtimeMs,
+        }),
+      });
+      if (!response.ok) {
+        const apiError = await readApiError(response);
+        throw Object.assign(new Error(apiError.message), { code: apiError.code });
+      }
+      const data = (await response.json()) as DocumentData;
+      setDocument(data);
+      setSelectedBlock(null);
+      setComment("");
+      setToast("Comment saved to the plan");
+      window.setTimeout(() => setToast(null), 2600);
+    } catch (error) {
+      setCommentError(error instanceof Error ? error.message : "Unable to save the comment.");
+    } finally {
+      setSaving(false);
+    }
+  }, [comment, document, saving, selectedBlock]);
+
+  const reload = useCallback(async () => {
+    if (!document) return;
+    await openDocument(document.path);
+    setToast("Plan reloaded from disk");
+    window.setTimeout(() => setToast(null), 2200);
+  }, [document, openDocument]);
+
+  const comments = parsed?.blocks.filter((block): block is CommentBlock => block.kind === "comment") ?? [];
+  const title = parsed?.title ?? (document ? filename(document.path).replace(/\.(md|markdown)$/i, "") : "");
+  const titleBlock = parsed?.blocks.find(
+    (block): block is ContentBlock => block.kind === "content" && block.heading?.depth === 1,
+  );
 
   return (
-    <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-8 px-6 py-12 font-sans">
-      <header className="flex flex-col gap-1">
-        <h1 className="text-2xl font-semibold tracking-tight">Plan Visualizer</h1>
-        <p className="text-sm text-zinc-500 dark:text-zinc-400">
-          Scaffold · Next.js + Ollama Cloud (MiniMax) integration
-        </p>
+    <main className="app-shell">
+      <header className="topbar">
+        <Link className="brand" href="/" aria-label="Plan Visualizer home">
+          <span className="brand-mark"><Icon name="document" size={17} /></span>
+          <span>Plan Visualizer</span>
+        </Link>
+        <form className="path-form" onSubmit={submitPath}>
+          <button
+            className="path-picker-button"
+            type="button"
+            onClick={() => void pickPlan()}
+            disabled={picking}
+            aria-label="Choose a plan file"
+            title="Choose a plan file"
+          >
+            <Icon name="folder" size={16} />
+          </button>
+          <input
+            ref={pathRef}
+            aria-label="Absolute path to plan file"
+            value={pathInput}
+            onChange={(event) => setPathInput(event.target.value)}
+            placeholder="/absolute/path/to/plans/plan-feature.md"
+            spellCheck={false}
+          />
+          <button className="path-submit-button" type="submit" disabled={opening || !pathInput.trim()}>
+            {opening ? "Opening…" : document ? "Open" : "Preview"}
+            {!opening && <Icon name="arrow" size={15} />}
+          </button>
+        </form>
+        <span className="local-pill"><span /> Local only</span>
       </header>
 
-      {/* Connection status */}
-      <section className="rounded-xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-            Ollama connection
-          </h2>
-          <button
-            onClick={recheckHealth}
-            disabled={healthLoading}
-            className="rounded-md px-2 py-1 text-xs text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 disabled:opacity-50 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
-          >
-            {healthLoading ? "Checking…" : "Recheck"}
-          </button>
+      {openError && (
+        <div className="error-banner" role="alert">
+          <span>{openError}</span>
+          <button type="button" onClick={() => setOpenError(null)} aria-label="Dismiss error"><Icon name="x" size={16} /></button>
         </div>
-        {health && (
-          <dl className="grid grid-cols-[7rem_1fr] gap-y-2 text-sm">
-            <dt className="text-zinc-500 dark:text-zinc-400">Status</dt>
-            <dd className="flex items-center gap-2">
-              <span
-                className={`inline-block h-2 w-2 rounded-full ${
-                  health.ok ? "bg-emerald-500" : "bg-red-500"
-                }`}
-              />
-              {health.ok ? "Reachable" : "Unreachable"}
-            </dd>
-            <dt className="text-zinc-500 dark:text-zinc-400">Host</dt>
-            <dd className="font-mono text-xs">{health.host || "—"}</dd>
-            <dt className="text-zinc-500 dark:text-zinc-400">Model</dt>
-            <dd className="flex items-center gap-2 font-mono text-xs">
-              {health.model || "—"}
-              {health.cloud && (
-                <span className="rounded bg-indigo-100 px-1.5 py-0.5 font-sans text-[10px] font-medium uppercase tracking-wide text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300">
-                  cloud
-                </span>
-              )}
-            </dd>
-            {health.error && (
+      )}
+
+      {!document ? (
+        <section className="welcome">
+          <div className="welcome-glow" />
+          <div className="welcome-icon"><Icon name="sparkle" size={25} /></div>
+          <p className="eyebrow">A calmer way to review technical plans</p>
+          <h1>Read the plan.<br /><em>Shape what happens next.</em></h1>
+          <p className="welcome-copy">
+            Paste an absolute path above to turn any local Markdown plan into a focused review surface. Your notes are written directly back to the file.
+          </p>
+          <button className="welcome-action" type="button" onClick={() => void pickPlan()} disabled={picking}>
+            {picking ? "Opening file chooser…" : "Choose a plan file"} {!picking && <Icon name="arrow" size={17} />}
+          </button>
+          <div className="welcome-features">
+            <div><span>01</span><strong>Beautiful preview</strong><p>Typography and structure made for long technical documents.</p></div>
+            <div><span>02</span><strong>Contextual comments</strong><p>Leave feedback beside the exact block that needs attention.</p></div>
+            <div><span>03</span><strong>File-native workflow</strong><p>Review markers live in Markdown, ready for your plan review loop.</p></div>
+          </div>
+        </section>
+      ) : (
+        <div className="workspace">
+          <aside className="outline-panel">
+            <div className="outline-label">On this page</div>
+            <nav aria-label="Document outline">
+              {parsed?.outline.map((item) => (
+                <a
+                  key={item.slug}
+                  className={`outline-link depth-${item.depth}`}
+                  href={`#${item.slug}`}
+                >
+                  {item.text}
+                </a>
+              ))}
+              {!parsed?.outline.length && <span className="outline-empty">No headings found</span>}
+            </nav>
+            <div className="outline-footer">
+              <span><Icon name="document" size={15} /> {parsed?.wordCount.toLocaleString()} words</span>
+              <span>{Math.max(1, Math.ceil((parsed?.wordCount ?? 0) / 220))} min read</span>
+            </div>
+          </aside>
+
+          <section className="document-column">
+            <div className="document-meta">
+              <div className="file-identity">
+                <span className="file-icon"><Icon name="document" size={19} /></span>
+                <span><strong>{filename(document.path)}</strong><small>{dirname(document.path)}</small></span>
+              </div>
+              <button className="reload-button" type="button" onClick={() => void reload()} disabled={opening}>
+                <Icon name="refresh" size={15} /> Reload
+              </button>
+            </div>
+
+            <article className="plan-paper">
+              <div className="paper-heading" id={titleBlock?.id}>
+                <p className="eyebrow">Implementation plan</p>
+                <h1>{title}</h1>
+                <div className="paper-rule"><span /></div>
+                <p className="paper-hint">Hover over any block and select the comment icon to leave feedback in context.</p>
+              </div>
+
+              <div className="markdown-body">
+                {parsed?.blocks.map((block) => block.kind === "content" && block.id === titleBlock?.id ? null : block.kind === "comment" ? (
+                  <div className="inline-comment" id={block.id} key={block.id}>
+                    <span className="inline-comment-icon"><Icon name="comment" size={16} /></span>
+                    <div><span className="inline-comment-label">Your review note</span><p>{block.text}</p></div>
+                    <span className="review-status"><span /> Pending review</span>
+                  </div>
+                ) : (
+                  <section
+                    className={`reviewable-block${selectedBlock?.id === block.id ? " is-selected" : ""}`}
+                    id={block.id}
+                    key={`${block.id}-${block.startLine}`}
+                  >
+                    <MarkdownBlock block={block} />
+                    <button
+                      className="block-comment-button"
+                      type="button"
+                      onClick={() => chooseBlock(block)}
+                      aria-label={`Comment on ${block.heading?.text ?? `lines ${block.startLine}–${block.endLine}`}`}
+                      title="Add a comment"
+                    >
+                      <Icon name="comment" size={16} />
+                    </button>
+                  </section>
+                ))}
+              </div>
+            </article>
+          </section>
+
+          <aside className={`review-panel${selectedBlock ? " composing" : ""}`}>
+            {selectedBlock ? (
+              <div className="comment-composer">
+                <div className="composer-header">
+                  <div><span className="composer-kicker">New comment</span><strong>{selectedBlock.section}</strong></div>
+                  <button type="button" onClick={() => { setSelectedBlock(null); setComment(""); setCommentError(null); }} aria-label="Close composer"><Icon name="x" size={17} /></button>
+                </div>
+                <blockquote>{selectedBlock.heading?.text ?? selectedBlock.source.replace(/[#>*_`~]/g, "").slice(0, 150)}</blockquote>
+                <label htmlFor="comment">What should change?</label>
+                <textarea
+                  id="comment"
+                  ref={commentRef}
+                  value={comment}
+                  onChange={(event) => setComment(event.target.value)}
+                  onKeyDown={(event) => {
+                    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                      event.preventDefault();
+                      void saveComment();
+                    }
+                  }}
+                  placeholder="Be specific about the decision, risk, or detail you want revised…"
+                  rows={7}
+                  maxLength={4000}
+                />
+                <div className="composer-meta"><span>Saved as an <code>@me</code> review marker</span><span>{comment.length}/4000</span></div>
+                {commentError && <div className="composer-error" role="alert">{commentError}</div>}
+                <button className="save-comment" type="button" onClick={() => void saveComment()} disabled={saving || !comment.trim()}>
+                  {saving ? "Saving to plan…" : "Save comment to plan"}
+                  {!saving && <Icon name="check" size={16} />}
+                </button>
+                <span className="keyboard-hint">⌘/Ctrl + Enter to save</span>
+              </div>
+            ) : (
               <>
-                <dt className="text-zinc-500 dark:text-zinc-400">Error</dt>
-                <dd className="text-xs text-red-600 dark:text-red-400">
-                  {health.error}
-                </dd>
+                <div className="review-panel-header">
+                  <div><span className="outline-label">Review notes</span><strong>{comments.length}</strong></div>
+                  <p>Comments saved in this plan and waiting for the next review round.</p>
+                </div>
+                <div className="review-list">
+                  {comments.map((item) => (
+                    <CommentCard
+                      key={item.id}
+                      comment={item}
+                      onNavigate={() => window.document.getElementById(item.id)?.scrollIntoView({ behavior: "smooth", block: "center" })}
+                    />
+                  ))}
+                  {!comments.length && (
+                    <div className="empty-reviews">
+                      <span><Icon name="comment" size={20} /></span>
+                      <strong>No review notes yet</strong>
+                      <p>Hover over a document block and use the comment button to add one.</p>
+                    </div>
+                  )}
+                </div>
+                <div className="review-help">
+                  <Icon name="sparkle" size={16} />
+                  <p><strong>Ready for your workflow</strong>Run the plan review after commenting. Each <code>@me</code> marker gives it the exact context to revise.</p>
+                </div>
               </>
             )}
-          </dl>
-        )}
-        {health && !health.ok && (
-          <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
-            Is the daemon running? Start it with{" "}
-            <code className="rounded bg-zinc-100 px-1 py-0.5 font-mono dark:bg-zinc-800">
-              ollama serve
-            </code>
-            . Cloud models also need{" "}
-            <code className="rounded bg-zinc-100 px-1 py-0.5 font-mono dark:bg-zinc-800">
-              ollama signin
-            </code>
-            .
-          </p>
-        )}
-      </section>
-
-      {/* Model test box */}
-      <section className="rounded-xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
-        <h2 className="mb-1 text-sm font-medium text-zinc-700 dark:text-zinc-300">
-          Test the model
-        </h2>
-        <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
-          Sanity check for the integration — sends your prompt to the model and
-          streams the reply. Not a product feature.
-        </p>
-        <textarea
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          onKeyDown={(e) => {
-            if ((e.metaKey || e.ctrlKey) && e.key === "Enter") run();
-          }}
-          rows={3}
-          className="w-full resize-y rounded-lg border border-zinc-200 bg-zinc-50 p-3 font-sans text-sm outline-none focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-900 dark:focus:border-zinc-600"
-          placeholder="Ask the model something…"
-        />
-        <div className="mt-3 flex items-center gap-3">
-          <button
-            onClick={run}
-            disabled={running || !prompt.trim()}
-            className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-200"
-          >
-            {running ? "Streaming…" : "Send"}
-          </button>
-          <span className="text-xs text-zinc-400">⌘/Ctrl + Enter</span>
+          </aside>
         </div>
+      )}
 
-        {error && (
-          <p className="mt-4 rounded-lg bg-red-50 p-3 text-xs text-red-600 dark:bg-red-950/40 dark:text-red-400">
-            {error}
-          </p>
-        )}
-
-        {thinking && (
-          <div className="mt-4">
-            <button
-              onClick={() => setShowThinking((s) => !s)}
-              className="text-xs text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200"
-            >
-              {showThinking ? "▾" : "▸"} Reasoning
-            </button>
-            {showThinking && (
-              <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-zinc-50 p-3 font-mono text-xs text-zinc-500 dark:bg-zinc-900 dark:text-zinc-400">
-                {thinking}
-              </pre>
-            )}
-          </div>
-        )}
-
-        {answer && (
-          <div className="mt-4">
-            <div className="mb-1 text-xs text-zinc-500 dark:text-zinc-400">
-              Response
-            </div>
-            <pre className="whitespace-pre-wrap rounded-lg bg-zinc-50 p-3 font-sans text-sm dark:bg-zinc-900">
-              {answer}
-            </pre>
-          </div>
-        )}
-      </section>
+      {toast && <div className="toast" role="status"><Icon name="check" size={16} /> {toast}</div>}
     </main>
   );
 }

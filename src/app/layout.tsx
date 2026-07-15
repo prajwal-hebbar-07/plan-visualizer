@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Plan Visualizer",
-  description: "Local plan visualizer with Ollama Cloud (MiniMax) integration",
+  title: "Plan Visualizer — Review local plans beautifully",
+  description: "Preview local Markdown plans and write contextual review comments directly back to the file.",
 };
 
 export default function RootLayout({

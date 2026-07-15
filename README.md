@@ -1,11 +1,13 @@
 # Plan Visualizer
 
-A local-first [Next.js](https://nextjs.org) app wired up to **Ollama Cloud** via
-your **local Ollama daemon**, using a **MiniMax** model by default.
+A local-first review surface for Markdown implementation plans. Give it an
+absolute file path, read the plan in a focused preview, and attach contextual
+comments that are written directly back to the document as `@me` HTML markers.
 
-> **Status:** scaffold. The Next.js app, the Ollama/MiniMax integration, and the
-> local port are set up and verified. The plan-visualization/review features are
-> built on top of this foundation.
+Those markers are compatible with the local plan review workflow: review the
+notes to revise the plan, then implement the approved result. The existing
+Ollama integration remains available through its API routes for future assisted
+review features.
 
 ## How the integration works
 
@@ -37,8 +39,22 @@ npm run dev
 ```
 
 Open **http://localhost:4823** — a non-standard port set in the `dev`/`start`
-scripts. The home page shows the Ollama connection status and a box to stream a
-test prompt through the model, so you can confirm the integration end-to-end.
+scripts. Both commands bind to `127.0.0.1`, because the document API has local
+filesystem access and must not be exposed to the network. Paste an absolute path
+to a `.md` or `.markdown` file into the header, or use **Choose a plan file** to
+open the native macOS file chooser.
+The last opened path is remembered locally in the browser. You can also open a
+file with `http://localhost:4823/?path=/absolute/path/to/plan.md`.
+
+Hover over any rendered block to add a comment. Saving inserts a nearby marker:
+
+```md
+<!-- @me: explain the rollback behavior for this migration -->
+```
+
+Writes are atomic and guarded by the file modification time and selected source
+text. If the file changes in another editor, the app asks you to reload instead
+of overwriting it.
 
 ## Configuration
 
@@ -61,15 +77,18 @@ src/
 │   └── ollama.ts       Ollama client, health check, streaming chat helper
 └── app/
     ├── api/
+    │   ├── document/   POST — open a local plan; PATCH — add a review marker
     │   ├── health/     GET  — is the daemon reachable? which model?
     │   └── chat/       POST — streams a chat completion as NDJSON
     ├── layout.tsx
-    └── page.tsx        Connection status + model test box
+    └── page.tsx        Plan preview and contextual review interface
 ```
 
 ### API
 
 - `GET /api/health` → `{ ok, host, model, cloud, localModels?, error? }`
+- `POST /api/document` — body `{path}`, returns the local Markdown and metadata
+- `PATCH /api/document` — appends a guarded `@me` comment beside a source block
 - `POST /api/chat` — body `{ messages: {role, content}[], model?, think? }`,
   responds with NDJSON events: `{type:"thinking"|"content", text}`, then
   `{type:"done"}` (or `{type:"error", error}`).
