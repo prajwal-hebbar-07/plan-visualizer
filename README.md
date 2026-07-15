@@ -45,6 +45,8 @@ to a `.md` or `.markdown` file into the header, or use **Choose a plan file** to
 open the native macOS file chooser.
 The last opened path is remembered locally in the browser. You can also open a
 file with `http://localhost:4823/?path=/absolute/path/to/plan.md`.
+The interface follows the system color scheme initially; use the header toggle
+to choose and remember light or dark mode explicitly.
 
 Hover over any rendered block to add a comment. Saving inserts a nearby marker:
 

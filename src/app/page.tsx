@@ -23,8 +23,10 @@ type IconName =
   | "comment"
   | "document"
   | "folder"
+  | "moon"
   | "refresh"
   | "sparkle"
+  | "sun"
   | "x";
 
 function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
@@ -34,8 +36,10 @@ function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
     comment: <><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/><path d="M8 9h8M8 13h5"/></>,
     document: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 13h8M8 17h6"/></>,
     folder: <><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></>,
+    moon: <path d="M20.5 14.1A8.5 8.5 0 0 1 9.9 3.5 8.5 8.5 0 1 0 20.5 14.1Z"/>,
     refresh: <><path d="M20 7h-5V2"/><path d="M20 2v5h-5M20 7a8 8 0 1 0 1 5"/></>,
     sparkle: <><path d="m12 3-1.2 3.8L7 8l3.8 1.2L12 13l1.2-3.8L17 8l-3.8-1.2Z"/><path d="m5 14-.7 2.3L2 17l2.3.7L5 20l.7-2.3L8 17l-2.3-.7Z"/></>,
+    sun: <><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"/></>,
     x: <><path d="m6 6 12 12M18 6 6 18"/></>,
   };
 
@@ -171,6 +175,13 @@ export default function Home() {
     void openDocument(pathInput);
   };
 
+  const toggleTheme = () => {
+    const currentTheme = window.document.documentElement.dataset.theme;
+    const nextTheme = currentTheme === "dark" ? "light" : "dark";
+    window.document.documentElement.dataset.theme = nextTheme;
+    window.localStorage.setItem("plan-visualizer:theme", nextTheme);
+  };
+
   const pickPlan = useCallback(async () => {
     if (picking) return;
     setPicking(true);
@@ -273,7 +284,19 @@ export default function Home() {
             {!opening && <Icon name="arrow" size={15} />}
           </button>
         </form>
-        <span className="local-pill"><span /> Local only</span>
+        <div className="topbar-actions">
+          <button
+            className="theme-toggle"
+            type="button"
+            onClick={toggleTheme}
+            aria-label="Toggle color theme"
+            title="Toggle light and dark mode"
+          >
+            <span className="theme-icon theme-icon-moon"><Icon name="moon" size={15} /></span>
+            <span className="theme-icon theme-icon-sun"><Icon name="sun" size={16} /></span>
+          </button>
+          <span className="local-pill"><span /> Local only</span>
+        </div>
       </header>
 
       {openError && (
