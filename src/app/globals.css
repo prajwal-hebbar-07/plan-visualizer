@@ -1194,6 +1194,168 @@ kbd {
   overflow-wrap: anywhere;
 }
 
+/* ============ IMPLEMENT ============ */
+.pv-implement {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--raised);
+}
+
+.pv-implement-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.pv-implement-head svg {
+  color: var(--accent);
+}
+
+.pv-implement-head strong {
+  font-size: 12.5px;
+  font-weight: 650;
+}
+
+.pv-implement-tag {
+  margin-left: auto;
+  font-size: 9.5px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--amber);
+  background: var(--amber-bg);
+  border: 1px solid var(--amber-border);
+  border-radius: 99px;
+  padding: 2px 8px;
+}
+
+.pv-implement-btn {
+  width: 100%;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid var(--btn-bg);
+  border-radius: 7px;
+  background: var(--btn-bg);
+  color: var(--btn-ink);
+  font-size: 12px;
+  font-weight: 650;
+  box-shadow: var(--shadow-sm);
+}
+
+.pv-implement-btn:hover:not(:disabled) {
+  background: var(--btn-bg-h);
+  border-color: var(--btn-bg-h);
+}
+
+.pv-implement-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pv-implement-btn.is-running {
+  background: var(--amber-bg);
+  border-color: var(--amber-border);
+  color: var(--amber);
+  box-shadow: none;
+}
+
+.pv-implement-btn.is-running:hover {
+  background: var(--amber-bg);
+  border-color: var(--amber);
+}
+
+.pv-implement-hint {
+  color: var(--ink3);
+  font-size: 10.5px;
+  line-height: 1.45;
+  text-align: center;
+}
+
+.pv-implement-branch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink2);
+}
+
+.pv-implement-branch svg {
+  color: var(--accent);
+}
+
+.pv-implement-branch code {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--accent);
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+.pv-implement-log {
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 10px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  display: grid;
+  gap: 3px;
+}
+
+.pv-log-line {
+  display: flex;
+  gap: 5px;
+  color: var(--ink2);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.pv-log-line.kind-status {
+  color: var(--ink3);
+  font-style: italic;
+}
+
+.pv-log-line.kind-assistant {
+  color: var(--ink);
+}
+
+.pv-log-line.kind-tool {
+  color: var(--accent);
+}
+
+.pv-log-line.kind-result {
+  color: var(--ink);
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.pv-log-caret {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.pv-log-line.kind-cursor {
+  color: var(--accent);
+  animation: pv-blink 1s step-end infinite;
+}
+
+@keyframes pv-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
 .pv-review-empty {
   border: 1px dashed var(--border-strong);
   border-radius: 10px;

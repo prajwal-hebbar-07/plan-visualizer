@@ -37,6 +37,8 @@ type IconName =
   | "file"
   | "reload"
   | "play"
+  | "stop"
+  | "branch"
   | "close"
   | "toastCheck";
 
@@ -143,6 +145,23 @@ const ICONS: Record<IconName, { vb: string; sw: number; node: React.ReactNode }>
     sw: 1.4,
     node: <path d="m5 3 7 5-7 5z" fill="currentColor" stroke="currentColor" strokeLinejoin="round" />,
   },
+  stop: {
+    vb: "0 0 16 16",
+    sw: 1.4,
+    node: <rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor" stroke="currentColor" strokeLinejoin="round" />,
+  },
+  branch: {
+    vb: "0 0 16 16",
+    sw: 1.4,
+    node: (
+      <>
+        <circle cx="4.5" cy="3.5" r="1.8" fill="none" stroke="currentColor" />
+        <circle cx="4.5" cy="12.5" r="1.8" fill="none" stroke="currentColor" />
+        <circle cx="11.5" cy="4.5" r="1.8" fill="none" stroke="currentColor" />
+        <path d="M4.5 5.3v5.4M4.5 8.5h3a4 4 0 0 0 4-4v-.2" fill="none" stroke="currentColor" strokeLinecap="round" />
+      </>
+    ),
+  },
   close: {
     vb: "0 0 12 12",
     sw: 1.5,
@@ -235,6 +254,10 @@ export default function Home() {
   const [saving, setSaving] = useState(false);
   const [reviewing, setReviewing] = useState(false);
   const [reviewError, setReviewError] = useState<string | null>(null);
+  const [implementing, setImplementing] = useState(false);
+  const [implementLog, setImplementLog] = useState<{ id: number; kind: string; text: string }[]>([]);
+  const [implementError, setImplementError] = useState<string | null>(null);
+  const [implementBranch, setImplementBranch] = useState<string | null>(null);
   const [commentError, setCommentError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -248,6 +271,10 @@ export default function Home() {
   const documentPathRef = useRef<string | null>(null);
   const hoveredIdRef = useRef<string | null>(null);
   const toastTimer = useRef<number | undefined>(undefined);
+  const implementAbort = useRef<AbortController | null>(null);
+  const logRef = useRef<HTMLDivElement>(null);
+
+  const busy = reviewing || implementing;
 
   const parsed = useMemo(() => (document ? parsePlan(document.content) : null), [document]);
 
@@ -258,6 +285,10 @@ export default function Home() {
   useEffect(() => {
     documentPathRef.current = document?.path ?? null;
   }, [document?.path]);
+
+  useEffect(() => {
+    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [implementLog]);
 
   const showToast = useCallback((message: string) => {
     window.clearTimeout(toastTimer.current);
@@ -284,6 +315,7 @@ export default function Home() {
       });
       if (!response.ok) throw new Error((await readApiError(response)).message);
       const data = (await response.json()) as DocumentData;
+      const switchedPlan = data.path !== documentPathRef.current;
       setDocument(data);
       setPathInput(data.path);
       setSelectedBlock(null);
@@ -292,6 +324,13 @@ export default function Home() {
       setComment("");
       setConflict(false);
       setReviewError(null);
+      // Only clear the implement panel when opening a different plan — a reload
+      // of the same file (e.g. after an implement run) keeps the log visible.
+      if (switchedPlan) {
+        setImplementLog([]);
+        setImplementError(null);
+        setImplementBranch(null);
+      }
       window.localStorage.setItem("plan-visualizer:last-path", data.path);
       return true;
     } catch (error) {
@@ -321,7 +360,7 @@ export default function Home() {
   }, []);
 
   const saveComment = useCallback(async () => {
-    if (!document || !selectedBlock || !comment.trim() || saving || reviewing) return;
+    if (!document || !selectedBlock || !comment.trim() || saving || busy) return;
     setSaving(true);
     setCommentError(null);
     try {
@@ -353,7 +392,7 @@ export default function Home() {
     } finally {
       setSaving(false);
     }
-  }, [comment, document, reviewing, saving, selectedBlock, selectedText, closeComposer, showToast]);
+  }, [comment, document, busy, saving, selectedBlock, selectedText, closeComposer, showToast]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -553,7 +592,7 @@ export default function Home() {
   }, [openDocument, picking, showToast]);
 
   const chooseBlock = (block: ContentBlock, selection = "") => {
-    if (reviewing) return;
+    if (busy) return;
     setSelectedBlock(block);
     setSelectedText(selection);
     setSelectionPrompt(null);
@@ -603,6 +642,77 @@ export default function Home() {
       setReviewing(false);
     }
   }, [document, openDocument, reviewing, showToast]);
+
+  const stopImplement = useCallback(() => {
+    implementAbort.current?.abort();
+  }, []);
+
+  const runImplement = useCallback(async () => {
+    if (!document || busy) return;
+
+    const targetPath = document.path;
+    const controller = new AbortController();
+    implementAbort.current = controller;
+    setImplementing(true);
+    setImplementError(null);
+    setImplementLog([]);
+    setImplementBranch(null);
+
+    let sawError: string | null = null;
+    try {
+      const response = await fetch("/api/implement", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: targetPath }),
+        signal: controller.signal,
+      });
+      if (!response.ok || !response.body) throw new Error((await readApiError(response)).message);
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let seq = 0;
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let newline: number;
+        while ((newline = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, newline).trim();
+          buffer = buffer.slice(newline + 1);
+          if (!line) continue;
+          let event: { type: string; text?: string; error?: string; branch?: string };
+          try {
+            event = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          if (event.type === "error") {
+            sawError = event.error ?? "Claude could not implement the plan.";
+          } else if (event.type === "done") {
+            if (event.branch) setImplementBranch(event.branch);
+          } else {
+            const nextSeq = seq++;
+            setImplementLog((prev) => [
+              ...prev,
+              { id: nextSeq, kind: event.type, text: event.text ?? "" },
+            ]);
+          }
+        }
+      }
+
+      if (sawError) setImplementError(sawError);
+      else showToast("Claude finished implementing the plan");
+    } catch (error) {
+      if (controller.signal.aborted) showToast("Stopped implementation");
+      else setImplementError(error instanceof Error ? error.message : "Claude could not implement the plan.");
+    } finally {
+      setImplementing(false);
+      implementAbort.current = null;
+      // Claude may have changed files (including the plan); reload it in place.
+      if (documentPathRef.current === targetPath) await openDocument(targetPath);
+    }
+  }, [document, busy, openDocument, showToast]);
 
   const jumpTo = (id: string) => {
     const el = window.document.getElementById(id);
@@ -827,7 +937,7 @@ export default function Home() {
             </div>
 
             <article className="pv-surface" ref={surfaceRef}>
-              {!reviewing && hoveredBlockId && gutterTop !== null && (
+              {!busy && hoveredBlockId && gutterTop !== null && (
                 <button
                   className="pv-gutter-btn"
                   type="button"
@@ -948,7 +1058,7 @@ export default function Home() {
                     className="pv-btn-save"
                     type="button"
                     onClick={() => void saveComment()}
-                    disabled={saving || reviewing || !comment.trim()}
+                    disabled={saving || busy || !comment.trim()}
                   >
                     {saving ? "Saving…" : "Save note"}
                   </button>
@@ -967,7 +1077,7 @@ export default function Home() {
                 </div>
 
                 <div className="pv-review-run">
-                  <button type="button" onClick={() => void runPlanReview()} disabled={reviewing}>
+                  <button type="button" onClick={() => void runPlanReview()} disabled={busy}>
                     <Icon name={reviewing ? "reload" : "play"} size={12} />
                     {reviewing ? "Claude is reviewing…" : "Run plan review"}
                   </button>
@@ -981,6 +1091,53 @@ export default function Home() {
                   {reviewError && (
                     <div className="pv-review-run-error" role="alert">
                       {reviewError}
+                    </div>
+                  )}
+                </div>
+
+                <div className="pv-implement">
+                  <div className="pv-implement-head">
+                    <Icon name="branch" size={12} />
+                    <strong>Implement</strong>
+                    <span className="pv-implement-tag">writes code</span>
+                  </div>
+                  <button
+                    className={`pv-implement-btn${implementing ? " is-running" : ""}`}
+                    type="button"
+                    onClick={() => (implementing ? stopImplement() : void runImplement())}
+                    disabled={reviewing}
+                  >
+                    <Icon name={implementing ? "stop" : "play"} size={12} />
+                    {implementing ? "Stop implementation" : "Implement plan"}
+                  </button>
+                  <span className="pv-implement-hint">
+                    {implementing
+                      ? "Claude is editing files and running commands on a dedicated branch."
+                      : "Claude implements the plan on a new plan/… branch with full tool access."}
+                  </span>
+
+                  {implementBranch && (
+                    <div className="pv-implement-branch">
+                      <Icon name="branch" size={11} />
+                      <code>{implementBranch}</code>
+                    </div>
+                  )}
+
+                  {(implementing || implementLog.length > 0) && (
+                    <div className="pv-implement-log" ref={logRef}>
+                      {implementLog.map((line) => (
+                        <div key={line.id} className={`pv-log-line kind-${line.kind}`}>
+                          {line.kind === "tool" && <span className="pv-log-caret">›</span>}
+                          <span className="pv-log-text">{line.text}</span>
+                        </div>
+                      ))}
+                      {implementing && <div className="pv-log-line kind-cursor">▍</div>}
+                    </div>
+                  )}
+
+                  {implementError && (
+                    <div className="pv-review-run-error" role="alert">
+                      {implementError}
                     </div>
                   )}
                 </div>
@@ -1022,7 +1179,7 @@ export default function Home() {
       )}
 
       {/* ============ SELECTION PILL ============ */}
-      {selectionPrompt && !selectedBlock && !reviewing && (
+      {selectionPrompt && !selectedBlock && !busy && (
         <div
           className="pv-pill-wrap"
           style={{

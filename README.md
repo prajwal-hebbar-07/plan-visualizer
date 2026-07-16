@@ -10,8 +10,8 @@ Nothing leaves your machine: the app runs on `127.0.0.1`, reads and writes the
 file with the Node filesystem API, and stores no database and no account.
 
 ```
-  read a plan  ─▶  annotate blocks / selections  ─▶  Run plan review  ─▶  reload
-  (rendered)       (@me markers in the .md)           (Claude Code)        (resolved)
+  read a plan  ─▶  annotate  ─▶  Run plan review  ─▶  reload  ─▶  Implement plan
+  (rendered)      (@me marks)     (Claude Code)      (resolved)   (Claude, on a branch)
 ```
 
 ---
@@ -49,6 +49,10 @@ file with the Node filesystem API, and stores no database and no account.
 - **One-click resolution.** **Run plan review** invokes Claude Code with
   `/plan-review <plan>`; Claude edits the plan to satisfy your notes, and the
   app reloads the updated file when it finishes.
+- **One-click implementation.** **Implement plan** checks out a dedicated
+  `plan/<slug>` branch and runs Claude Code with full tool access to build the
+  plan, streaming its narration, tool calls, and result into a live log you can
+  **Stop** at any time.
 - **Safe writes.** Saves are atomic and guarded by the file's modification time
   and the exact source text of the annotated block, so a plan edited elsewhere
   is never silently clobbered.
@@ -66,21 +70,21 @@ not be exposed to the network.
    ├─▶ POST  /api/document        read a plan file  ──▶  fs.readFile
    ├─▶ PATCH /api/document        insert an @me note ──▶ atomic write (temp + rename)
    ├─▶ POST  /api/document/pick   native file chooser ─▶ osascript (macOS)
-   └─▶ POST  /api/review          resolve notes ──────▶ claude /plan-review
+   ├─▶ POST  /api/review          resolve notes ──────▶ claude /plan-review
+   └─▶ POST  /api/implement       build the plan ─────▶ git branch + claude (streamed)
 ```
+
+`/api/review` and `/api/implement` share the Claude/git plumbing in
+`src/lib/claude-cli.ts` (locating the profile and binary, resolving the repo).
+Review blocks until Claude finishes and returns the result; implement **streams**
+Claude's `stream-json` events to the browser as newline-delimited JSON so the UI
+can show a live log and cancel the run.
 
 Plan text is parsed **client-side** by `src/lib/plan-document.ts` into a flat
 list of blocks — content blocks (paragraphs, headings, fenced code) and comment
 blocks (parsed `@me` markers) — plus a heading outline, title, word count, and
 comment count. The renderer uses that model to lay out the document, position
 the hover/selection controls, and list pending notes in the review panel.
-
-There is also an **Ollama integration** (`src/lib/ollama.ts`, `/api/health`,
-`/api/chat`) carried over from the project's scaffold. The local Ollama daemon
-serves local models directly and transparently proxies `:cloud` model tags to
-Ollama Cloud, so the app only ever talks to `localhost`. These routes are not
-wired into the current review UI; they remain available for future assisted-
-review features.
 
 ## The review workflow
 
@@ -96,7 +100,11 @@ review features.
 4. **Run plan review.** Claude Code opens the plan, resolves every `@me` note
    (editing the plan and removing the markers as your `/plan-review` workflow
    dictates), and the app reloads the file so you see the result.
-5. Repeat until the plan reads the way you want, then implement it.
+5. Repeat until the plan reads the way you want.
+6. **Implement plan.** When you're happy with it, hit **Implement plan**. The
+   app checks out a `plan/<slug>` branch and runs Claude Code with full tool
+   access to build the plan, streaming a live log of what it edits and runs.
+   **Stop** ends the run immediately; when it finishes the plan is reloaded.
 
 This mirrors the file-native `/plan` → annotate → `/plan-review` loop: the
 markers this app writes are ordinary `@me` HTML comments that plan-review
@@ -136,11 +144,10 @@ selection (if any) and the comment body.
 - **macOS** for the native **Browse…** file chooser (it shells out to
   `osascript`). On other platforms, paste an absolute path instead — everything
   else works cross-platform.
-- **Claude Code** for the **Run plan review** button, with a profile that
-  contains the `plan-review` skill. Optional otherwise.
-- **[Ollama](https://ollama.com)** only if you use the (currently unwired)
-  `/api/health` and `/api/chat` routes — run `ollama serve`, and `ollama signin`
-  for `:cloud` models.
+- **Claude Code** for the **Run plan review** and **Implement plan** buttons,
+  with a profile that contains the `plan-review` skill. Optional otherwise.
+- **Git**: the plan must live inside a git repository to use **Implement plan**
+  (it works on a dedicated branch). Reading and reviewing don't require git.
 
 ## Setup
 
@@ -168,6 +175,10 @@ server). Both commands bind to `127.0.0.1`.
 - **Run the review:** open the **Review notes** panel and click **Run plan
   review**. The button is disabled while Claude is working; the plan reloads
   automatically when it finishes.
+- **Implement the plan:** in the **Implement** section click **Implement plan**.
+  Claude works on a fresh `plan/<slug>` branch and its progress streams into a
+  live log; click **Stop implementation** to end it early. Editing is disabled
+  while a run is in progress. The plan is reloaded when the run ends.
 - **Reload from disk:** use the reload control in the document meta bar. If the
   file changed underneath you, the app shows a conflict banner instead of
   overwriting your view.
@@ -188,17 +199,16 @@ Set in `.env.local` (see `.env.example`):
 
 | Variable            | Default                          | Purpose                                                      |
 | ------------------- | -------------------------------- | ----------------------------------------------------------- |
-| `OLLAMA_HOST`       | `http://127.0.0.1:11434`         | URL of your local Ollama daemon (used by `/api/*` Ollama routes) |
-| `OLLAMA_MODEL`      | `minimax-m2.7:cloud`             | Model tag (`:cloud` = cloud model, needs `ollama signin`)   |
 | `CLAUDE_CONFIG_DIR` | auto-detected                    | Claude profile dir containing the `plan-review` skill       |
 | `CLAUDE_BIN`        | `~/.local/bin/claude` or `PATH`  | Path to the Claude Code executable                          |
 
-For **Run plan review**, when `CLAUDE_CONFIG_DIR` is unset the app looks for a
-profile that contains the `plan-review` skill in `~/.claude`, `~/.claude-one`,
-or `~/.claude-two`. When `CLAUDE_BIN` is unset it tries `~/.local/bin/claude`
-and then `claude` on `PATH`. The review runs with `cwd` set to the nearest
-ancestor of the plan that contains a `.git` directory (falling back to the
-plan's own directory).
+Both **Run plan review** and **Implement plan** use these. When
+`CLAUDE_CONFIG_DIR` is unset the app looks for a profile that contains the
+`plan-review` skill in `~/.claude`, `~/.claude-one`, or `~/.claude-two`. When
+`CLAUDE_BIN` is unset it tries `~/.local/bin/claude` and then `claude` on
+`PATH`. Review runs with `cwd` at the nearest `.git` ancestor of the plan;
+implement uses the plan's git top-level directory and requires the plan to live
+inside a git repository (so it can work on a branch).
 
 ## Safety model
 
@@ -214,26 +224,32 @@ plan's own directory).
   *and* the exact source text of the annotated block. If either has changed on
   disk, the API returns `409 DOCUMENT_CHANGED` and the UI asks you to reload
   instead of overwriting the newer version.
-- **Concurrency guard.** `/api/review` refuses (`409`) to start a second review
-  of a plan that is already being reviewed, and times out after 15 minutes.
+- **Concurrency guard.** `/api/review` and `/api/implement` each refuse (`409`)
+  to start a second run against a plan that is already being processed. Review
+  times out after 15 minutes; implement after 60.
+- **Implement is a deliberate, powerful action.** `/api/implement` runs Claude
+  Code with `--permission-mode bypassPermissions`, so it edits files and runs
+  commands unattended. To contain that, it always works on a dedicated
+  `plan/<slug>` branch (created/checked out first) and refuses to run on a plan
+  that isn't inside a git repository — so the generated work is isolated and
+  easy to review, diff, or discard. **Stop** aborts the request, which kills the
+  Claude process.
 
 ## Project layout
 
 ```
 src/
 ├── lib/
-│   ├── env.ts            Runtime config (Ollama host/model) + cloud-model helper
-│   ├── ollama.ts         Ollama client, health check, streaming chat helper
 │   ├── plan-file.ts      Absolute-path validation + size/type guard (shared by routes)
-│   └── plan-document.ts  Client-side Markdown → blocks/outline/@me-comment parser
+│   ├── plan-document.ts  Client-side Markdown → blocks/outline/@me-comment parser
+│   └── claude-cli.ts     Locate the Claude profile/binary + git helpers (review & implement)
 └── app/
     ├── api/
     │   ├── document/
     │   │   ├── route.ts        POST read a plan · PATCH insert an @me note (atomic)
     │   │   └── pick/route.ts   POST native macOS file chooser (osascript)
     │   ├── review/route.ts     POST run Claude Code /plan-review for the plan
-    │   ├── health/route.ts     GET  is the Ollama daemon reachable? which model?
-    │   └── chat/route.ts       POST stream a chat completion as NDJSON
+    │   └── implement/route.ts  POST implement the plan on a branch (streamed NDJSON)
     ├── layout.tsx        Fonts, no-flash theme bootstrap, document metadata
     ├── globals.css       The full visual design system
     └── page.tsx          The reader + reviewer client component
@@ -255,12 +271,13 @@ All routes use the Node.js runtime.
 - **`POST /api/review`** — body `{ path }`. Runs Claude Code
   `/plan-review <path>` and returns `{ ok, output }`. Returns `409` if a review
   of that plan is already running.
-- **`GET /api/health`** — returns
-  `{ ok, host, model, cloud, localModels?, error? }` for the Ollama daemon.
-- **`POST /api/chat`** — body `{ messages: {role, content}[], model?, think? }`.
-  Streams newline-delimited JSON events:
-  `{type:"thinking"|"content", text}`, then `{type:"done"}` (or
-  `{type:"error", error}`).
+- **`POST /api/implement`** — body `{ path }`. Checks out a `plan/<slug>` branch
+  and runs Claude Code with `bypassPermissions`, streaming newline-delimited
+  JSON events as it works: `{type:"status"|"assistant"|"tool"}`, then
+  `{type:"result", text, ok}`, and finally `{type:"done", branch}` (or
+  `{type:"error", error}`). Returns `400` if the plan isn't in a git repo and
+  `409` if an implement of that plan is already running. Aborting the request
+  stops the run.
 
 ## Scripts
 
@@ -277,5 +294,4 @@ All routes use the Node.js runtime.
 - **react-markdown** + **remark-gfm** for rendering
 - **Tailwind CSS v4** (via `@tailwindcss/postcss`) alongside the design system
   in `globals.css`
-- **ollama** JS client for the Ollama routes
 - **TypeScript** throughout
