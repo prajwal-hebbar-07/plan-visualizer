@@ -64,6 +64,12 @@ Writes are atomic and guarded by the file modification time and selected source
 text. If the file changes in another editor, the app asks you to reload instead
 of overwriting it.
 
+Use **Run plan review** in the review sidebar to invoke Claude Code with
+`/plan-review <absolute-plan-path>`. The app waits for Claude to resolve the
+notes and then reloads the updated plan. It uses `CLAUDE_CONFIG_DIR` when set;
+otherwise it looks for a local Claude profile containing the `plan-review`
+skill.
+
 ## Configuration
 
 Set in `.env.local` (see `.env.example`):
@@ -72,6 +78,8 @@ Set in `.env.local` (see `.env.example`):
 | -------------- | --------------------------- | ---------------------------------------------------- |
 | `OLLAMA_HOST`  | `http://127.0.0.1:11434`    | URL of your local Ollama daemon                      |
 | `OLLAMA_MODEL` | `minimax-m2.7:cloud`        | Model tag (`:cloud` = cloud model, needs `signin`)   |
+| `CLAUDE_CONFIG_DIR` | auto-detected        | Claude profile containing the `plan-review` skill    |
+| `CLAUDE_BIN`   | `~/.local/bin/claude` or `PATH` | Optional path to the Claude Code executable      |
 
 The port (`4823`) lives in `package.json` scripts, not `.env` — Next.js does not
 read `PORT` from env files for the dev server.
@@ -97,6 +105,7 @@ src/
 - `GET /api/health` → `{ ok, host, model, cloud, localModels?, error? }`
 - `POST /api/document` — body `{path}`, returns the local Markdown and metadata
 - `PATCH /api/document` — appends a guarded `@me` comment beside a source block
+- `POST /api/review` — runs Claude Code `/plan-review` for the selected plan
 - `POST /api/chat` — body `{ messages: {role, content}[], model?, think? }`,
   responds with NDJSON events: `{type:"thinking"|"content", text}`, then
   `{type:"done"}` (or `{type:"error", error}`).

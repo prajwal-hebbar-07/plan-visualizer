@@ -1,10 +1,7 @@
-import { chmod, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
-import path from "node:path";
+import { chmod, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { MAX_PLAN_FILE_BYTES, resolvePlanPath } from "@/lib/plan-file";
 
 export const runtime = "nodejs";
-
-const MAX_FILE_BYTES = 5 * 1024 * 1024;
-const ALLOWED_EXTENSIONS = new Set([".md", ".markdown"]);
 
 type DocumentPayload = {
   path: string;
@@ -17,26 +14,9 @@ function errorResponse(message: string, status: number, code?: string) {
   return Response.json({ error: message, code }, { status });
 }
 
-async function resolvePlanPath(value: unknown) {
-  if (typeof value !== "string" || !value.trim()) {
-    throw new Error("Enter an absolute path to a Markdown plan.");
-  }
-
-  const requestedPath = value.trim();
-  if (!path.isAbsolute(requestedPath)) {
-    throw new Error("The plan path must be absolute.");
-  }
-  if (!ALLOWED_EXTENSIONS.has(path.extname(requestedPath).toLowerCase())) {
-    throw new Error("The plan must be a .md or .markdown file.");
-  }
-
-  return realpath(requestedPath);
-}
-
 async function readDocument(filePath: string): Promise<DocumentPayload> {
   const fileStat = await stat(filePath);
-  if (!fileStat.isFile()) throw new Error("That path does not point to a file.");
-  if (fileStat.size > MAX_FILE_BYTES) {
+  if (fileStat.size > MAX_PLAN_FILE_BYTES) {
     throw new Error("The plan is larger than the 5 MB preview limit.");
   }
 
