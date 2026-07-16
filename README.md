@@ -38,8 +38,7 @@ file with the Node filesystem API, and stores no database and no account.
 ## What it does
 
 - **Beautiful preview.** Renders GitHub-flavored Markdown — headings, code,
-  tables, and task lists — with editorial typography, an auto-generated outline,
-  active-section tracking, and a word-count / read-time estimate.
+  tables, and task lists — with editorial typography and a focused reading surface.
 - **Contextual comments.** Hover any block and click the margin control to
   comment on the whole block, or select a phrase and use the floating
   **Comment** pill to comment on that exact text.
@@ -53,6 +52,13 @@ file with the Node filesystem API, and stores no database and no account.
   `plan/<slug>` branch and runs Claude Code with full tool access to build the
   plan, streaming its narration, tool calls, and result into a live log you can
   **Stop** at any time.
+- **Ask about the plan.** The **Ask** tab is a read-only Q&A with Claude about
+  the open plan — grounded in the plan file and the repository, with a
+  persistent session so follow-up questions keep their context. Select text and
+  hit **Ask** to question a specific part.
+- **Manual Claude context.** Choose Claude account 1 or 2, then explicitly pick
+  an existing repository chat or **New chat**. Ask, review, and implementation
+  use that choice but retain their own command-specific permissions.
 - **Safe writes.** Saves are atomic and guarded by the file's modification time
   and the exact source text of the annotated block, so a plan edited elsewhere
   is never silently clobbered.
@@ -70,15 +76,22 @@ not be exposed to the network.
    ├─▶ POST  /api/document        read a plan file  ──▶  fs.readFile
    ├─▶ PATCH /api/document        insert an @me note ──▶ atomic write (temp + rename)
    ├─▶ POST  /api/document/pick   native file chooser ─▶ osascript (macOS)
+   ├─▶ GET   /api/claude/sessions list chats ─────────▶ profile JSONL metadata
    ├─▶ POST  /api/review          resolve notes ──────▶ claude /plan-review
-   └─▶ POST  /api/implement       build the plan ─────▶ git branch + claude (streamed)
+   ├─▶ POST  /api/implement       build the plan ─────▶ git branch + claude (streamed)
+   └─▶ POST  /api/ask             answer questions ───▶ claude (read-only, streamed)
 ```
 
-`/api/review` and `/api/implement` share the Claude/git plumbing in
-`src/lib/claude-cli.ts` (locating the profile and binary, resolving the repo).
-Review blocks until Claude finishes and returns the result; implement **streams**
-Claude's `stream-json` events to the browser as newline-delimited JSON so the UI
-can show a live log and cancel the run.
+`/api/review`, `/api/implement`, and `/api/ask` share the Claude/git plumbing in
+`src/lib/claude-cli.ts` (validating the chosen account/chat, locating the binary,
+and resolving the repo).
+Review blocks until Claude finishes and returns the result; implement and ask
+**stream** Claude's `stream-json` events to the browser as newline-delimited JSON
+so the UI can show live progress and cancel the run. Ask keeps a per-plan Claude
+selected session (`--session-id` for an explicit New chat, then `--resume`) so
+all command types keep the chosen context. Ask restricts Claude to read-only
+tools (`Read`, `Grep`, `Glob`); review and implementation select their own
+permissions from the action that was clicked.
 
 Plan text is parsed **client-side** by `src/lib/plan-document.ts` into a flat
 list of blocks — content blocks (paragraphs, headings, fenced code) and comment
@@ -165,6 +178,8 @@ server). Both commands bind to `127.0.0.1`.
 
 - **Open a file:** paste an absolute `.md` / `.markdown` path in the header and
   press Enter (or **Preview**), or click **Browse…** / **Choose a plan file**.
+- **Choose Claude context:** select Claude account 1 or 2, then choose an
+  existing repository chat or **New chat**. No account or chat is preselected.
 - **Comment on a block:** hover it and click the round control that appears in
   the left margin.
 - **Comment on a selection:** select text in the document and click the floating
@@ -179,6 +194,10 @@ server). Both commands bind to `127.0.0.1`.
   Claude works on a fresh `plan/<slug>` branch and its progress streams into a
   live log; click **Stop implementation** to end it early. Editing is disabled
   while a run is in progress. The plan is reloaded when the run ends.
+- **Ask about the plan:** switch to the **Ask about plan** tab and type a
+  question (Enter to send, Shift+Enter for a newline). Answers stream in and the
+  thread keeps context across follow-ups. Selecting text and clicking **Ask** on
+  the pill attaches that excerpt to your next question.
 - **Reload from disk:** use the reload control in the document meta bar. If the
   file changed underneath you, the app shows a conflict banner instead of
   overwriting your view.
@@ -197,16 +216,17 @@ server). Both commands bind to `127.0.0.1`.
 
 Set in `.env.local` (see `.env.example`):
 
-| Variable            | Default                          | Purpose                                                      |
-| ------------------- | -------------------------------- | ----------------------------------------------------------- |
-| `CLAUDE_CONFIG_DIR` | auto-detected                    | Claude profile dir containing the `plan-review` skill       |
-| `CLAUDE_BIN`        | `~/.local/bin/claude` or `PATH`  | Path to the Claude Code executable                          |
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `CLAUDE_ONE_CONFIG_DIR` | `~/.claude-one` | Profile for Claude account 1 |
+| `CLAUDE_TWO_CONFIG_DIR` | `~/.claude-two` | Profile for Claude account 2 |
+| `CLAUDE_ONE_LABEL` | `Claude account 1` | Optional account 1 display label |
+| `CLAUDE_TWO_LABEL` | `Claude account 2` | Optional account 2 display label |
+| `CLAUDE_BIN` | `~/.local/bin/claude` or `PATH` | Path to the Claude Code executable |
 
-Both **Run plan review** and **Implement plan** use these. When
-`CLAUDE_CONFIG_DIR` is unset the app looks for a profile that contains the
-`plan-review` skill in `~/.claude`, `~/.claude-one`, or `~/.claude-two`. When
-`CLAUDE_BIN` is unset it tries `~/.local/bin/claude` and then `claude` on
-`PATH`. Review runs with `cwd` at the nearest `.git` ancestor of the plan;
+All Claude actions use the manually selected account. When `CLAUDE_BIN` is
+unset the app tries `~/.local/bin/claude` and then `claude` on `PATH`. Review
+runs with `cwd` at the nearest `.git` ancestor of the plan;
 implement uses the plan's git top-level directory and requires the plan to live
 inside a git repository (so it can work on a branch).
 
@@ -224,9 +244,14 @@ inside a git repository (so it can work on a branch).
   *and* the exact source text of the annotated block. If either has changed on
   disk, the API returns `409 DOCUMENT_CHANGED` and the UI asks you to reload
   instead of overwriting the newer version.
-- **Concurrency guard.** `/api/review` and `/api/implement` each refuse (`409`)
-  to start a second run against a plan that is already being processed. Review
-  times out after 15 minutes; implement after 60.
+- **Concurrency guard.** All command types share a lock for the manually chosen
+  account/chat, so a question, review, and implementation can never resume the
+  same chat concurrently. Locks are released on completion, error, timeout,
+  abort, and stream cancellation. Review times out after 15 minutes,
+  implementation after 60, and questions after 10.
+- **Ask is read-only.** `/api/ask` runs Claude with `--allowedTools Read Grep
+  Glob` — it can read and search the repo to answer, but has no ability to edit
+  files or run commands.
 - **Implement is a deliberate, powerful action.** `/api/implement` runs Claude
   Code with `--permission-mode bypassPermissions`, so it edits files and runs
   commands unattended. To contain that, it always works on a dedicated
@@ -242,14 +267,16 @@ src/
 ├── lib/
 │   ├── plan-file.ts      Absolute-path validation + size/type guard (shared by routes)
 │   ├── plan-document.ts  Client-side Markdown → blocks/outline/@me-comment parser
-│   └── claude-cli.ts     Locate the Claude profile/binary + git helpers (review & implement)
+│   └── claude-cli.ts     Manual account/chat validation + Claude/git helpers
 └── app/
     ├── api/
+    │   ├── claude/sessions/route.ts  GET repository chats for one account
     │   ├── document/
     │   │   ├── route.ts        POST read a plan · PATCH insert an @me note (atomic)
     │   │   └── pick/route.ts   POST native macOS file chooser (osascript)
     │   ├── review/route.ts     POST run Claude Code /plan-review for the plan
-    │   └── implement/route.ts  POST implement the plan on a branch (streamed NDJSON)
+    │   ├── implement/route.ts  POST implement the plan on a branch (streamed NDJSON)
+    │   └── ask/route.ts        POST read-only Q&A about the plan (streamed NDJSON)
     ├── layout.tsx        Fonts, no-flash theme bootstrap, document metadata
     ├── globals.css       The full visual design system
     └── page.tsx          The reader + reviewer client component
@@ -268,16 +295,27 @@ All routes use the Node.js runtime.
   disk.
 - **`POST /api/document/pick`** — no body. Opens the native macOS file chooser
   and returns `{ path }` (or `204` if cancelled, `501` off macOS).
-- **`POST /api/review`** — body `{ path }`. Runs Claude Code
-  `/plan-review <path>` and returns `{ ok, output }`. Returns `409` if a review
+- **`GET /api/claude/sessions`** — query `{ path, accountId }`. Returns safe
+  chat metadata for that account and repository; transcript contents and paths
+  are never returned.
+- **`POST /api/review`** — body `{ path, accountId, sessionId?, newChat }`.
+  Runs Claude Code `/plan-review <path>` and returns `{ ok, output, sessionId }`. Returns `409` if a review
   of that plan is already running.
-- **`POST /api/implement`** — body `{ path }`. Checks out a `plan/<slug>` branch
+- **`POST /api/implement`** — body `{ path, accountId, sessionId?, newChat }`. Checks out a `plan/<slug>` branch
   and runs Claude Code with `bypassPermissions`, streaming newline-delimited
   JSON events as it works: `{type:"status"|"assistant"|"tool"}`, then
-  `{type:"result", text, ok}`, and finally `{type:"done", branch}` (or
+  `{type:"result", text, ok}`, and finally `{type:"done", branch, sessionId}` (or
   `{type:"error", error}`). Returns `400` if the plan isn't in a git repo and
-  `409` if an implement of that plan is already running. Aborting the request
-  stops the run.
+  `409` if that plan or selected chat is already running a command. Aborting
+  the request stops the run and releases its locks.
+- **`POST /api/ask`** — body
+  `{ path, question, selection?, accountId, sessionId?, newChat }`. Runs
+  Claude Code read-only (`Read`/`Grep`/`Glob`) and streams newline-delimited
+  JSON: `{type:"research"}` for each file/search, `{type:"answer", text}` chunks,
+  then `{type:"done", sessionId}` (or `{type:"error", error}`). Pass the returned
+  `sessionId` back to continue the same conversation. Returns `409` if the
+  selected chat is already handling a question, review, or implementation;
+  aborting stops the run and releases the chat.
 
 ## Scripts
 

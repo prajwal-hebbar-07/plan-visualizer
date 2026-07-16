@@ -12,21 +12,24 @@
  *   { "type": "tool",      "text": "..." }         a tool Claude ran
  *   { "type": "result",    "text": "...", "ok": true }  final summary
  *   { "type": "error",     "error": "..." }
- *   { "type": "done",      "branch": "plan/<slug>" }
+ *   { "type": "done",      "branch": "plan/<slug>", "sessionId": "..." }
  *
- * Aborting the request (the UI's Stop button) kills the child process. A second
- * implement of the same plan is rejected with 409, and a 60-minute safety cap
- * stops a run that never finishes.
+ * The manually selected account/chat supplies context, while this endpoint
+ * always supplies implementation permissions and prompt semantics. Aborting
+ * kills the child (escalating when necessary) and releases both plan/chat locks.
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import { resolvePlanPath } from "@/lib/plan-file";
 import {
+  acquireClaudeSession,
+  claudeSessionArgs,
   claudeEnv,
+  ClaudeContextError,
   execFileAsync,
   findClaudeBinary,
-  findClaudeConfigDir,
   gitToplevel,
+  resolveClaudeRunContext,
 } from "@/lib/claude-cli";
 
 export const runtime = "nodejs";
@@ -99,7 +102,8 @@ type ClientEvent =
   | { type: "tool"; text: string }
   | { type: "result"; text: string; ok: boolean }
   | { type: "error"; error: string }
-  | { type: "done"; branch: string };
+  | { type: "session"; sessionId: string }
+  | { type: "done"; branch: string; sessionId: string };
 
 function summarizeToolUse(name: string, input: unknown, cwd: string): string {
   if (!input || typeof input !== "object") return name;
@@ -151,20 +155,34 @@ function transformLine(line: string, cwd: string): ClientEvent[] {
 
 export async function POST(request: Request) {
   let filePath: string;
+  let context: Awaited<ReturnType<typeof resolveClaudeRunContext>>;
   try {
-    const body = (await request.json()) as { path?: unknown };
+    const body = (await request.json()) as {
+      path?: unknown;
+      accountId?: unknown;
+      sessionId?: unknown;
+      newChat?: unknown;
+    };
     filePath = await resolvePlanPath(body.path);
+    context = await resolveClaudeRunContext(filePath, body);
   } catch (error) {
+    if (error instanceof ClaudeContextError) {
+      return Response.json({ error: error.message, code: error.code }, { status: error.status });
+    }
     const message = error instanceof Error ? error.message : "The plan path is invalid.";
     return Response.json({ error: message }, { status: 400 });
   }
 
+  const claudeBinary = await findClaudeBinary();
+
   if (activeImplements.has(filePath)) {
     return Response.json({ error: "Claude is already implementing this plan." }, { status: 409 });
   }
+  activeImplements.add(filePath);
 
   const cwd = await gitToplevel(filePath);
   if (!cwd) {
+    activeImplements.delete(filePath);
     return Response.json(
       {
         error:
@@ -174,21 +192,32 @@ export async function POST(request: Request) {
     );
   }
 
-  const [configDir, claudeBinary] = await Promise.all([findClaudeConfigDir(), findClaudeBinary()]);
-  const env = claudeEnv(configDir);
+  const env = claudeEnv(context.configDir);
   const branch = branchName(filePath);
+
+  let releaseSession: () => void;
+  try {
+    releaseSession = acquireClaudeSession(context, "implementation");
+  } catch (error) {
+    activeImplements.delete(filePath);
+    if (error instanceof ClaudeContextError) {
+      return Response.json({ error: error.message, code: error.code }, { status: error.status });
+    }
+    throw error;
+  }
 
   let branchStatus: string;
   try {
     branchStatus = await ensureBranch(cwd, branch);
   } catch (error) {
+    activeImplements.delete(filePath);
+    releaseSession();
     return Response.json({ error: branchError(error, branch) }, { status: 500 });
   }
 
-  activeImplements.add(filePath);
-
   const encoder = new TextEncoder();
   let child: ChildProcess | null = null;
+  let terminateChild: (() => void) | null = null;
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -211,30 +240,46 @@ export async function POST(request: Request) {
 
       send({ type: "status", text: branchStatus });
       send({ type: "status", text: "Claude is implementing the plan…" });
+      send({ type: "session", sessionId: context.sessionId });
 
-      child = spawn(
-        claudeBinary,
-        [
-          "--print",
-          "--permission-mode",
-          "bypassPermissions",
-          "--no-session-persistence",
-          "--output-format",
-          "stream-json",
-          "--verbose",
-          implementPrompt(filePath),
-        ],
-        { cwd, env },
-      );
+      try {
+        child = spawn(
+          claudeBinary,
+          [
+            "--print",
+            "--permission-mode",
+            "bypassPermissions",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            ...claudeSessionArgs(context),
+            implementPrompt(filePath),
+          ],
+          { cwd, env },
+        );
+      } catch (error) {
+        activeImplements.delete(filePath);
+        releaseSession();
+        send({ type: "error", error: error instanceof Error ? error.message : "Claude could not start." });
+        send({ type: "done", branch, sessionId: context.sessionId });
+        finish();
+        return;
+      }
 
       let stoppedByClient = false;
       let timedOut = false;
       let stdoutBuffer = "";
       let stderrTail = "";
+      let forceKill: NodeJS.Timeout | undefined;
 
       const killChild = () => {
-        if (child && !child.killed) child.kill("SIGTERM");
+        if (!child || child.exitCode !== null) return;
+        child.kill("SIGTERM");
+        forceKill ??= setTimeout(() => {
+          if (child && child.exitCode === null) child.kill("SIGKILL");
+        }, 2_000);
       };
+      terminateChild = killChild;
       const timeout = setTimeout(() => {
         timedOut = true;
         killChild();
@@ -247,8 +292,10 @@ export async function POST(request: Request) {
 
       const cleanup = () => {
         clearTimeout(timeout);
+        clearTimeout(forceKill);
         request.signal.removeEventListener("abort", onAbort);
         activeImplements.delete(filePath);
+        releaseSession();
       };
 
       child.stdout?.setEncoding("utf8");
@@ -276,7 +323,7 @@ export async function POST(request: Request) {
               ? "Claude Code was not found. Set CLAUDE_BIN to the Claude executable and restart the app."
               : error.message,
         });
-        send({ type: "done", branch });
+        send({ type: "done", branch, sessionId: context.sessionId });
         finish();
       });
 
@@ -295,12 +342,17 @@ export async function POST(request: Request) {
             error: stderrTail.trim() || `Claude exited with code ${code ?? "unknown"}.`,
           });
         }
-        send({ type: "done", branch });
+        send({ type: "done", branch, sessionId: context.sessionId });
         finish();
       });
     },
     cancel() {
-      if (child && !child.killed) child.kill("SIGTERM");
+      if (terminateChild) {
+        terminateChild();
+      } else {
+        activeImplements.delete(filePath);
+        releaseSession();
+      }
     },
   });
 

@@ -4,13 +4,53 @@
  * and the small filesystem/git primitives they need. Kept server-only.
  */
 import { execFile } from "node:child_process";
-import { access } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { access, readdir, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import readline from "node:readline";
 import { promisify } from "node:util";
 
 export const execFileAsync = promisify(execFile);
+
+export type ClaudeAccountId = "claude-one" | "claude-two";
+export type ClaudeCommand = "question" | "review" | "implementation";
+
+export type ClaudeSessionOption = {
+  id: string;
+  title: string;
+  updatedAt: string;
+  preview?: string;
+};
+
+export type ClaudeRunContext = {
+  accountId: ClaudeAccountId;
+  accountLabel: string;
+  configDir: string;
+  sessionId: string;
+  isNewSession: boolean;
+  cwd: string;
+};
+
+export class ClaudeContextError extends Error {
+  constructor(
+    message: string,
+    readonly status = 400,
+    readonly code = "INVALID_CLAUDE_CONTEXT",
+  ) {
+    super(message);
+  }
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const claudeGlobal = globalThis as typeof globalThis & {
+  __planVisualizerActiveClaudeSessions?: Map<string, ClaudeCommand>;
+};
+const activeSessions =
+  claudeGlobal.__planVisualizerActiveClaudeSessions ??
+  (claudeGlobal.__planVisualizerActiveClaudeSessions = new Map<string, ClaudeCommand>());
 
 /** Expand a leading `~` / `~/` to the user's home directory. */
 export function expandHome(value: string) {
@@ -57,28 +97,202 @@ export async function gitToplevel(filePath: string): Promise<string | null> {
   }
 }
 
-/**
- * Locate a Claude profile directory. Honors `CLAUDE_CONFIG_DIR`; otherwise
- * picks the first local `.claude*` profile that contains the plan-review skill.
- */
-export async function findClaudeConfigDir() {
-  const configured = process.env.CLAUDE_CONFIG_DIR?.trim();
-  if (configured) return expandHome(configured);
-
-  const home = os.homedir();
-  const candidates = [".claude", ".claude-one", ".claude-two"];
-  for (const candidate of candidates) {
-    const configDir = path.join(/* turbopackIgnore: true */ home, candidate);
-    if (
-      await exists(
-        path.join(/* turbopackIgnore: true */ configDir, "skills", "plan-review", "SKILL.md"),
-      )
-    ) {
-      return configDir;
-    }
+/** The two Claude accounts exposed to the manual selector. */
+export async function getClaudeAccount(accountId: unknown) {
+  if (accountId !== "claude-one" && accountId !== "claude-two") {
+    throw new ClaudeContextError("Choose Claude account 1 or Claude account 2 first.", 400, "ACCOUNT_REQUIRED");
   }
 
-  return undefined;
+  const one = accountId === "claude-one";
+  const configured = (one ? process.env.CLAUDE_ONE_CONFIG_DIR : process.env.CLAUDE_TWO_CONFIG_DIR)?.trim();
+  const configDir = configured
+    ? expandHome(configured)
+    : path.join(os.homedir(), one ? ".claude-one" : ".claude-two");
+  if (!(await exists(configDir))) {
+    throw new ClaudeContextError(
+      `${one ? "Claude account 1" : "Claude account 2"} is not configured on this machine.`,
+      404,
+      "ACCOUNT_NOT_FOUND",
+    );
+  }
+
+  return {
+    id: accountId as ClaudeAccountId,
+    label:
+      (one ? process.env.CLAUDE_ONE_LABEL : process.env.CLAUDE_TWO_LABEL)?.trim() ||
+      (one ? "Claude account 1" : "Claude account 2"),
+    configDir,
+  };
+}
+
+function isInside(root: string, candidate: string) {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+}
+
+async function sessionFiles(configDir: string) {
+  const projectsDir = path.join(configDir, "projects");
+  let projectDirs;
+  try {
+    projectDirs = await readdir(projectsDir, { withFileTypes: true });
+  } catch {
+    return [] as string[];
+  }
+
+  const files: string[] = [];
+  for (const projectDir of projectDirs) {
+    if (!projectDir.isDirectory()) continue;
+    const dir = path.join(projectsDir, projectDir.name);
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.isFile() && UUID_RE.test(entry.name.replace(/\.jsonl$/i, "")) && entry.name.endsWith(".jsonl")) {
+        files.push(path.join(dir, entry.name));
+      }
+    }
+  }
+  return files;
+}
+
+async function readSessionOption(filePath: string, projectRoot: string): Promise<ClaudeSessionOption | null> {
+  const id = path.basename(filePath, ".jsonl");
+  let title = "";
+  let preview = "";
+  let cwd = "";
+  let updatedAt = "";
+
+  try {
+    const input = createReadStream(filePath, { encoding: "utf8" });
+    const lines = readline.createInterface({ input, crlfDelay: Infinity });
+    for await (const line of lines) {
+      let event: Record<string, unknown>;
+      try {
+        event = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      if (event.isSidechain === true) continue;
+      if (!cwd && typeof event.cwd === "string") cwd = event.cwd;
+      if (typeof event.timestamp === "string" && event.timestamp > updatedAt) updatedAt = event.timestamp;
+      if (event.type === "ai-title" && typeof event.aiTitle === "string" && event.aiTitle.trim()) {
+        title = event.aiTitle.trim();
+      }
+      if (!preview && event.type === "user") {
+        const message = event.message as { content?: unknown } | undefined;
+        if (typeof message?.content === "string" && message.content.trim()) {
+          preview = message.content.replace(/\s+/g, " ").trim().slice(0, 180);
+        }
+      }
+    }
+  } catch {
+    return null;
+  }
+
+  if (!cwd || !isInside(projectRoot, cwd)) return null;
+  if (!updatedAt) {
+    try {
+      updatedAt = (await stat(filePath)).mtime.toISOString();
+    } catch {
+      updatedAt = new Date(0).toISOString();
+    }
+  }
+  return {
+    id,
+    title: title || preview.slice(0, 80) || `Chat ${id.slice(0, 8)}`,
+    updatedAt,
+    ...(preview ? { preview } : {}),
+  };
+}
+
+/** Sanitized existing chats for one account, limited to the plan repository. */
+export async function listClaudeSessions(accountId: unknown, planPath: string) {
+  const [account, projectRoot] = await Promise.all([
+    getClaudeAccount(accountId),
+    findProjectRoot(planPath),
+  ]);
+  const files = await sessionFiles(account.configDir);
+  const sessions = (await Promise.all(files.map((file) => readSessionOption(file, projectRoot))))
+    .filter((session): session is ClaudeSessionOption => session !== null)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    .slice(0, 60);
+  return { account: { id: account.id, label: account.label }, sessions };
+}
+
+/** Validate the user's manual account/chat choice and decide resume vs new. */
+export async function resolveClaudeRunContext(
+  planPath: string,
+  selection: { accountId?: unknown; sessionId?: unknown; newChat?: unknown },
+): Promise<ClaudeRunContext> {
+  const [account, cwd] = await Promise.all([
+    getClaudeAccount(selection.accountId),
+    findProjectRoot(planPath),
+  ]);
+
+  if (typeof selection.sessionId === "string" && UUID_RE.test(selection.sessionId)) {
+    const sessions = await listClaudeSessions(account.id, planPath);
+    if (!sessions.sessions.some((session) => session.id === selection.sessionId)) {
+      throw new ClaudeContextError(
+        "That chat does not belong to the selected Claude account and repository. Choose it again.",
+        404,
+        "CHAT_NOT_FOUND",
+      );
+    }
+    return {
+      accountId: account.id,
+      accountLabel: account.label,
+      configDir: account.configDir,
+      sessionId: selection.sessionId,
+      isNewSession: false,
+      cwd,
+    };
+  }
+
+  if (selection.newChat === true && selection.sessionId == null) {
+    return {
+      accountId: account.id,
+      accountLabel: account.label,
+      configDir: account.configDir,
+      sessionId: randomUUID(),
+      isNewSession: true,
+      cwd,
+    };
+  }
+
+  throw new ClaudeContextError(
+    "Choose an existing chat or explicitly choose New chat first.",
+    400,
+    "CHAT_REQUIRED",
+  );
+}
+
+export function claudeSessionArgs(context: ClaudeRunContext) {
+  return context.isNewSession
+    ? ["--session-id", context.sessionId]
+    : ["--resume", context.sessionId];
+}
+
+/** Serialize all command types that target the same manually selected chat. */
+export function acquireClaudeSession(context: ClaudeRunContext, command: ClaudeCommand) {
+  const key = `${context.accountId}:${context.sessionId}`;
+  const active = activeSessions.get(key);
+  if (active) {
+    throw new ClaudeContextError(
+      `This chat is already handling a ${active} command. Wait for it to finish or stop it before starting ${command}.`,
+      409,
+      "CHAT_BUSY",
+    );
+  }
+  activeSessions.set(key, command);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    if (activeSessions.get(key) === command) activeSessions.delete(key);
+  };
 }
 
 /** Path to the Claude executable: `CLAUDE_BIN`, else `~/.local/bin/claude`, else `PATH`. */
