@@ -1,3 +1,9 @@
+/**
+ * Shared validation for user-supplied plan paths, used by the document and
+ * review routes. A plan must be an absolute `.md`/`.markdown` file that exists
+ * and is under the preview size limit; anything else throws a message safe to
+ * show the user. Paths are resolved with `realpath` before use.
+ */
 import { realpath, stat } from "node:fs/promises";
 import path from "node:path";
 

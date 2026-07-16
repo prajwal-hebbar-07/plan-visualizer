@@ -1,3 +1,11 @@
+/**
+ * Client-side parser that turns raw plan Markdown into the model the reader
+ * renders from. `parsePlan` splits the document into a flat list of blocks —
+ * `content` blocks (paragraphs, headings, fenced code) and `comment` blocks
+ * (parsed `@me` HTML markers, including the quoted `Regarding:` selection) —
+ * and derives the heading outline, title, word count, and comment count. Line
+ * numbers are 1-based so they line up with the anchors sent to the write API.
+ */
 export type ContentBlock = {
   kind: "content";
   id: string;

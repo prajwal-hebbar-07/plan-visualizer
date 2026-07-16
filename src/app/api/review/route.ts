@@ -1,3 +1,13 @@
+/**
+ * POST /api/review — resolve a plan's `@me` notes with Claude Code.
+ *
+ * Runs `claude --print /plan-review <plan>` for the requested file, auto-
+ * detecting the Claude profile (`CLAUDE_CONFIG_DIR`, else a local `.claude*`
+ * dir containing the plan-review skill) and binary (`CLAUDE_BIN`, else
+ * `~/.local/bin/claude` or `PATH`). The working directory is the nearest
+ * `.git` ancestor of the plan. Concurrent reviews of the same plan are
+ * rejected with 409, and the command times out after 15 minutes.
+ */
 import { execFile } from "node:child_process";
 import { access } from "node:fs/promises";
 import { constants } from "node:fs";

@@ -1,3 +1,12 @@
+/**
+ * The plan file API.
+ *
+ * `POST` reads a plan and returns its content plus `mtimeMs`/`size` for
+ * conflict detection. `PATCH` inserts an `@me` review marker next to a block:
+ * the write is guarded by the expected `mtimeMs` and the block's exact source
+ * text (returning 409 `DOCUMENT_CHANGED` on any drift) and is applied
+ * atomically via a temp file + `rename` that preserves the original mode.
+ */
 import { chmod, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { MAX_PLAN_FILE_BYTES, resolvePlanPath } from "@/lib/plan-file";
 

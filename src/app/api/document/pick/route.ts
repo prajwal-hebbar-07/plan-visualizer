@@ -1,3 +1,8 @@
+/**
+ * POST /api/document/pick — open the native macOS file chooser via `osascript`
+ * and return the selected path. Responds 204 when the user cancels and 501 on
+ * non-macOS platforms (paste an absolute path instead).
+ */
 import { execFile } from "node:child_process";
 
 export const runtime = "nodejs";
