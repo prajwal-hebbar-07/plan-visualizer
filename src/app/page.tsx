@@ -42,6 +42,9 @@ type ClaudeSessionOption = {
   title: string;
   updatedAt: string;
   preview?: string;
+  model?: string;
+  contextTokens?: number;
+  contextWindow?: number;
 };
 
 type ClaudeChatChoice =
@@ -275,6 +278,12 @@ function formatLoaded(loadedAt: number, now: number) {
   return `loaded ${hours}h ago`;
 }
 
+function formatTokens(tokens: number) {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens >= 10_000_000 ? 0 : 1)}M`;
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`;
+  return tokens.toLocaleString();
+}
+
 function MarkdownBlock({ block }: { block: ContentBlock }) {
   return (
     <ReactMarkdown
@@ -362,6 +371,28 @@ export default function Home() {
         : { newChat: true }),
     };
   }, [claudeAccount, claudeChat]);
+
+  const selectedClaudeSession = useMemo(
+    () =>
+      claudeChat?.kind === "existing"
+        ? claudeSessions.find((session) => session.id === claudeChat.id) ?? null
+        : null,
+    [claudeChat, claudeSessions],
+  );
+
+  const contextUsage = useMemo(() => {
+    if (!selectedClaudeSession || selectedClaudeSession.contextTokens === undefined) return null;
+    const used = selectedClaudeSession.contextTokens;
+    const limit = selectedClaudeSession.contextWindow;
+    const percent = limit ? Math.min(100, Math.round((used / limit) * 100)) : null;
+    return {
+      used,
+      limit,
+      percent,
+      remaining: limit ? Math.max(0, limit - used) : null,
+      level: percent !== null && percent >= 85 ? "danger" : percent !== null && percent >= 70 ? "warning" : "healthy",
+    };
+  }, [selectedClaudeSession]);
 
   const parsed = useMemo(() => (document ? parsePlan(document.content) : null), [document]);
 
@@ -741,9 +772,44 @@ export default function Home() {
     [document, claudeBusy, clearClaudeOutput],
   );
 
-  const refreshClaudeSessions = useCallback(() => {
-    if (claudeAccount) void chooseClaudeAccount(claudeAccount);
-  }, [claudeAccount, chooseClaudeAccount]);
+  const refreshClaudeSessions = useCallback(async () => {
+    if (!document || !claudeAccount) return;
+    sessionListAbort.current?.abort();
+    const controller = new AbortController();
+    sessionListAbort.current = controller;
+    setClaudeSessionsError(null);
+    setClaudeSessionsLoading(true);
+
+    try {
+      const query = new URLSearchParams({ path: document.path, accountId: claudeAccount });
+      const response = await fetch(`/api/claude/sessions?${query}`, {
+        signal: controller.signal,
+        cache: "no-store",
+      });
+      if (!response.ok) throw new Error((await readApiError(response)).message);
+      const data = (await response.json()) as {
+        account: { id: ClaudeAccountId; label: string };
+        sessions: ClaudeSessionOption[];
+      };
+      if (controller.signal.aborted) return;
+      setClaudeAccountLabel(data.account.label);
+      setClaudeSessions(data.sessions);
+      setClaudeChat((current) => {
+        if (current?.kind !== "existing") return current;
+        const refreshed = data.sessions.find((session) => session.id === current.id);
+        return refreshed ? { ...current, title: refreshed.title } : current;
+      });
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setClaudeSessionsError(error instanceof Error ? error.message : "Claude chats could not be loaded.");
+      }
+    } finally {
+      if (sessionListAbort.current === controller) {
+        setClaudeSessionsLoading(false);
+        sessionListAbort.current = null;
+      }
+    }
+  }, [document, claudeAccount]);
 
   const chooseClaudeChat = useCallback(
     (value: string) => {
@@ -825,8 +891,9 @@ export default function Home() {
       setReviewError(error instanceof Error ? error.message : "Claude could not run the plan review.");
     } finally {
       setReviewing(false);
+      void refreshClaudeSessions();
     }
-  }, [document, claudeSelection, claudeBusy, openDocument, promoteClaudeSession, showToast]);
+  }, [document, claudeSelection, claudeBusy, openDocument, promoteClaudeSession, refreshClaudeSessions, showToast]);
 
   const stopImplement = useCallback(() => {
     implementAbort.current?.abort();
@@ -903,8 +970,9 @@ export default function Home() {
       implementAbort.current = null;
       // Claude may have changed files (including the plan); reload it in place.
       if (documentPathRef.current === targetPath) await openDocument(targetPath);
+      void refreshClaudeSessions();
     }
-  }, [document, claudeSelection, claudeBusy, openDocument, promoteClaudeSession, showToast]);
+  }, [document, claudeSelection, claudeBusy, openDocument, promoteClaudeSession, refreshClaudeSessions, showToast]);
 
   const stopAsk = useCallback(() => {
     askAbort.current?.abort();
@@ -990,9 +1058,10 @@ export default function Home() {
         update((turn) => ({ ...turn, streaming: false }));
         setAsking(false);
         askAbort.current = null;
+        void refreshClaudeSessions();
       }
     },
-    [document, claudeSelection, claudeBusy, promoteClaudeSession],
+    [document, claudeSelection, claudeBusy, promoteClaudeSession, refreshClaudeSessions],
   );
 
   const askAboutSelection = useCallback((text: string) => {
@@ -1066,6 +1135,25 @@ export default function Home() {
           </button>
 
           <div className="pv-divider" />
+
+          {document && (
+            <label className="pv-navbar-account">
+              <span>Claude account</span>
+              <select
+                value={claudeAccount ?? ""}
+                onChange={(event) => {
+                  const accountId = event.target.value as ClaudeAccountId | "";
+                  if (accountId) void chooseClaudeAccount(accountId);
+                }}
+                disabled={claudeBusy}
+                aria-label="Choose Claude account"
+              >
+                <option value="">Choose account…</option>
+                <option value="claude-one">Account 1</option>
+                <option value="claude-two">Account 2</option>
+              </select>
+            </label>
+          )}
 
           <button
             className="pv-icon-btn"
@@ -1250,88 +1338,6 @@ export default function Home() {
 
           {/* Work panel */}
           <aside className="pv-panel" aria-label="Work panel">
-            <div className="pv-claude-context">
-              <div className="pv-claude-context-head">
-                <div>
-                  <strong>Claude context</strong>
-                  <span>Choose account, then chat</span>
-                </div>
-                {claudeAccount && (
-                  <button
-                    type="button"
-                    className="pv-claude-refresh"
-                    onClick={refreshClaudeSessions}
-                    disabled={claudeBusy || claudeSessionsLoading}
-                    title="Refresh chats"
-                    aria-label="Refresh Claude chats"
-                  >
-                    <Icon name="reload" size={12} />
-                  </button>
-                )}
-              </div>
-
-              <div className="pv-claude-accounts" role="group" aria-label="Choose Claude account">
-                {(["claude-one", "claude-two"] as const).map((accountId, index) => (
-                  <button
-                    key={accountId}
-                    type="button"
-                    className={claudeAccount === accountId ? "is-selected" : ""}
-                    onClick={() => void chooseClaudeAccount(accountId)}
-                    disabled={claudeBusy}
-                    aria-pressed={claudeAccount === accountId}
-                  >
-                    Account {index + 1}
-                  </button>
-                ))}
-              </div>
-
-              {claudeAccount && (
-                <div className="pv-claude-chat-row">
-                  <label htmlFor="pv-claude-chat">Chat</label>
-                  <select
-                    id="pv-claude-chat"
-                    value={
-                      claudeChat
-                        ? claudeChat.kind === "new"
-                          ? "__new__"
-                          : claudeChat.id
-                        : ""
-                    }
-                    onChange={(event) => chooseClaudeChat(event.target.value)}
-                    disabled={claudeBusy || claudeSessionsLoading}
-                  >
-                    <option value="">
-                      {claudeSessionsLoading ? "Loading chats…" : "Choose a chat…"}
-                    </option>
-                    {!claudeSessionsLoading && <option value="__new__">＋ New chat</option>}
-                    {claudeChat?.kind === "existing" &&
-                      !claudeSessions.some((session) => session.id === claudeChat.id) && (
-                        <option value={claudeChat.id}>{claudeChat.title}</option>
-                      )}
-                    {claudeSessions.map((session) => (
-                      <option key={session.id} value={session.id}>
-                        {session.title}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-
-              {claudeSessionsError && (
-                <div className="pv-claude-context-error" role="alert">
-                  {claudeSessionsError}
-                </div>
-              )}
-
-              <div className={`pv-claude-context-status${claudeReady ? " is-ready" : ""}`}>
-                {claudeReady
-                  ? `${claudeAccountLabel} · ${claudeChat.title}`
-                  : claudeAccount
-                    ? "Choose an existing chat or New chat."
-                    : "No Claude account selected."}
-              </div>
-            </div>
-
             <div className="pv-panel-tabs">
               <div className="pv-seg" role="tablist">
                 <button
@@ -1356,6 +1362,111 @@ export default function Home() {
                   Ask about plan
                 </button>
               </div>
+            </div>
+
+            <div className="pv-chat-context">
+              <div className="pv-chat-context-head">
+                <div>
+                  <strong>Chat context</strong>
+                  <span>{claudeAccountLabel || "Select an account in the navbar"}</span>
+                </div>
+                {claudeAccount && (
+                  <button
+                    type="button"
+                    className="pv-claude-refresh"
+                    onClick={() => void refreshClaudeSessions()}
+                    disabled={claudeBusy || claudeSessionsLoading}
+                    title="Refresh chats and context usage"
+                    aria-label="Refresh Claude chats and context usage"
+                  >
+                    <Icon name="reload" size={12} />
+                  </button>
+                )}
+              </div>
+
+              <select
+                id="pv-claude-chat"
+                value={claudeChat ? (claudeChat.kind === "new" ? "__new__" : claudeChat.id) : ""}
+                onChange={(event) => chooseClaudeChat(event.target.value)}
+                disabled={!claudeAccount || claudeBusy || claudeSessionsLoading}
+                aria-label="Choose Claude chat"
+              >
+                <option value="">
+                  {!claudeAccount
+                    ? "Choose an account first…"
+                    : claudeSessionsLoading
+                      ? "Loading chats…"
+                      : "Choose a chat…"}
+                </option>
+                {claudeAccount && !claudeSessionsLoading && <option value="__new__">＋ New chat</option>}
+                {claudeChat?.kind === "existing" &&
+                  !claudeSessions.some((session) => session.id === claudeChat.id) && (
+                    <option value={claudeChat.id}>{claudeChat.title}</option>
+                  )}
+                {claudeSessions.map((session) => (
+                  <option key={session.id} value={session.id}>
+                    {session.title}
+                  </option>
+                ))}
+              </select>
+
+              {claudeSessionsError && (
+                <div className="pv-claude-context-error" role="alert">
+                  {claudeSessionsError}
+                </div>
+              )}
+
+              {claudeChat?.kind === "new" ? (
+                <div className="pv-context-usage is-healthy">
+                  <div className="pv-context-usage-row">
+                    <strong>Fresh context</strong>
+                    <span>0 tokens used</span>
+                  </div>
+                  <div className="pv-context-meter" aria-hidden="true">
+                    <span style={{ width: "0%" }} />
+                  </div>
+                  <small>A new chat will start with the next Claude command.</small>
+                </div>
+              ) : contextUsage ? (
+                <div className={`pv-context-usage is-${contextUsage.level}`}>
+                  <div className="pv-context-usage-row">
+                    <strong>
+                      {contextUsage.level === "danger"
+                        ? "Open a new chat soon"
+                        : contextUsage.level === "warning"
+                          ? "Context is getting full"
+                          : "Context available"}
+                    </strong>
+                    <span>
+                      {formatTokens(contextUsage.used)}
+                      {contextUsage.limit ? ` / ${formatTokens(contextUsage.limit)}` : " tokens"}
+                      {contextUsage.percent !== null ? ` · ${contextUsage.percent}%` : ""}
+                    </span>
+                  </div>
+                  {contextUsage.percent !== null && (
+                    <div
+                      className="pv-context-meter"
+                      role="progressbar"
+                      aria-label="Claude chat context used"
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={contextUsage.percent}
+                    >
+                      <span style={{ width: `${contextUsage.percent}%` }} />
+                    </div>
+                  )}
+                  <small>
+                    {selectedClaudeSession?.model ?? "Claude"}
+                    {contextUsage.remaining !== null
+                      ? ` · ${formatTokens(contextUsage.remaining)} tokens remaining`
+                      : " · usage from the latest turn"}
+                  </small>
+                </div>
+              ) : (
+                <div className="pv-context-empty">
+                  {claudeChat ? "Usage will appear after Claude replies in this chat." : "Choose a chat to see its context usage."}
+                </div>
+              )}
             </div>
 
             {sidebarTab === "review" ? (

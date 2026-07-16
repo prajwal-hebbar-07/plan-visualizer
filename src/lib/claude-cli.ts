@@ -23,6 +23,9 @@ export type ClaudeSessionOption = {
   title: string;
   updatedAt: string;
   preview?: string;
+  model?: string;
+  contextTokens?: number;
+  contextWindow?: number;
 };
 
 export type ClaudeRunContext = {
@@ -130,6 +133,26 @@ function isInside(root: string, candidate: string) {
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
 
+function contextWindowForModel(model: string) {
+  const normalized = model.toLowerCase();
+  if (
+    normalized.startsWith("claude-opus-4-8") ||
+    normalized.startsWith("claude-opus-4-7") ||
+    normalized.startsWith("claude-opus-4-6") ||
+    normalized.startsWith("claude-sonnet-5") ||
+    normalized.startsWith("claude-sonnet-4-6") ||
+    normalized.startsWith("claude-fable-5") ||
+    normalized.startsWith("claude-mythos")
+  ) {
+    return 1_000_000;
+  }
+  return normalized.startsWith("claude-") ? 200_000 : undefined;
+}
+
+function tokenCount(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
 async function sessionFiles(configDir: string) {
   const projectsDir = path.join(configDir, "projects");
   let projectDirs;
@@ -164,6 +187,8 @@ async function readSessionOption(filePath: string, projectRoot: string): Promise
   let preview = "";
   let cwd = "";
   let updatedAt = "";
+  let model = "";
+  let contextTokens: number | undefined;
 
   try {
     const input = createReadStream(filePath, { encoding: "utf8" });
@@ -187,6 +212,21 @@ async function readSessionOption(filePath: string, projectRoot: string): Promise
           preview = message.content.replace(/\s+/g, " ").trim().slice(0, 180);
         }
       }
+      if (event.type === "assistant") {
+        const message = event.message as { model?: unknown; usage?: unknown } | undefined;
+        const usage = message?.usage as Record<string, unknown> | undefined;
+        const candidateModel = typeof message?.model === "string" ? message.model : "";
+        const used = usage
+          ? tokenCount(usage.input_tokens) +
+            tokenCount(usage.cache_creation_input_tokens) +
+            tokenCount(usage.cache_read_input_tokens) +
+            tokenCount(usage.output_tokens)
+          : 0;
+        if (candidateModel && candidateModel !== "<synthetic>" && used > 0) {
+          model = candidateModel;
+          contextTokens = used;
+        }
+      }
     }
   } catch {
     return null;
@@ -200,11 +240,15 @@ async function readSessionOption(filePath: string, projectRoot: string): Promise
       updatedAt = new Date(0).toISOString();
     }
   }
+  const contextWindow = model ? contextWindowForModel(model) : undefined;
   return {
     id,
     title: title || preview.slice(0, 80) || `Chat ${id.slice(0, 8)}`,
     updatedAt,
     ...(preview ? { preview } : {}),
+    ...(model ? { model } : {}),
+    ...(contextTokens !== undefined ? { contextTokens } : {}),
+    ...(contextWindow ? { contextWindow } : {}),
   };
 }
 

@@ -58,7 +58,9 @@ file with the Node filesystem API, and stores no database and no account.
   hit **Ask** to question a specific part.
 - **Manual Claude context.** Choose Claude account 1 or 2, then explicitly pick
   an existing repository chat or **New chat**. Ask, review, and implementation
-  use that choice but retain their own command-specific permissions.
+  use that choice but retain their own command-specific permissions. The
+  selected chat shows its latest token usage and warns when it is time to open
+  a fresh chat.
 - **Safe writes.** Saves are atomic and guarded by the file's modification time
   and the exact source text of the annotated block, so a plan edited elsewhere
   is never silently clobbered.
@@ -180,6 +182,8 @@ server). Both commands bind to `127.0.0.1`.
   press Enter (or **Preview**), or click **Browse…** / **Choose a plan file**.
 - **Choose Claude context:** select Claude account 1 or 2, then choose an
   existing repository chat or **New chat**. No account or chat is preselected.
+  The context meter uses Claude's latest recorded token usage and refreshes
+  after each command.
 - **Comment on a block:** hover it and click the round control that appears in
   the left margin.
 - **Comment on a selection:** select text in the document and click the floating
@@ -296,8 +300,9 @@ All routes use the Node.js runtime.
 - **`POST /api/document/pick`** — no body. Opens the native macOS file chooser
   and returns `{ path }` (or `204` if cancelled, `501` off macOS).
 - **`GET /api/claude/sessions`** — query `{ path, accountId }`. Returns safe
-  chat metadata for that account and repository; transcript contents and paths
-  are never returned.
+  chat metadata for that account and repository, including the latest model and
+  context-token usage when available; transcript contents and paths are never
+  returned.
 - **`POST /api/review`** — body `{ path, accountId, sessionId?, newChat }`.
   Runs Claude Code `/plan-review <path>` and returns `{ ok, output, sessionId }`. Returns `409` if a review
   of that plan is already running.
