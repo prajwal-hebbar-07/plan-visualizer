@@ -352,6 +352,11 @@ kbd {
   width: 126px;
 }
 
+.pv-provider-select {
+  width: 88px;
+  flex: none;
+}
+
 .pv-navbar-chat-select {
   width: clamp(170px, 21vw, 290px);
 }
@@ -496,6 +501,13 @@ kbd {
   color: var(--accent);
 }
 
+.pv-navbar-usage {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+}
+
 .pv-navbar-context svg {
   position: absolute;
   inset: 0;
@@ -521,10 +533,27 @@ kbd {
 
 .pv-navbar-context > span {
   position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  line-height: 0.85;
   font-family: var(--mono);
-  font-size: 7.5px;
-  font-weight: 600;
   color: var(--ink2);
+}
+
+.pv-navbar-context > span small {
+  font-size: 5.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink3);
+}
+
+.pv-navbar-context > span strong {
+  font-size: 7px;
+  font-weight: 650;
 }
 
 .pv-navbar-context.is-warning {
@@ -1356,9 +1385,11 @@ kbd {
 }
 
 .markdown-body .task-list-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
+  position: relative;
+  display: block;
+  min-width: 0;
+  padding-left: 25px;
+  overflow-wrap: anywhere;
 }
 
 .markdown-body .task-list-item::marker {
@@ -1366,10 +1397,12 @@ kbd {
 }
 
 .markdown-body input[type="checkbox"] {
-  margin-top: 5px;
+  position: absolute;
+  top: 5px;
+  left: 0;
+  margin: 0;
   width: 15px;
   height: 15px;
-  flex: none;
   accent-color: var(--accent);
 }
 
@@ -2631,7 +2664,35 @@ kbd {
   }
 }
 
+@media (max-width: 1000px) {
+  .pv-quick-action,
+  .pv-work-open {
+    width: 30px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .pv-quick-action > span,
+  .pv-work-open-label {
+    display: none;
+  }
+}
+
 @media (max-width: 720px) {
+  .pv-header-inner {
+    flex-wrap: wrap;
+    padding: 7px 10px;
+  }
+
+  .pv-brand {
+    order: 0;
+  }
+
+  .pv-header-inner > .pv-icon-btn {
+    order: 1;
+    margin-left: auto;
+  }
+
   .pv-panel {
     width: 100vw;
     min-width: 0;
@@ -2654,22 +2715,44 @@ kbd {
   }
 
   .pv-navbar-actions {
+    order: 2;
+    flex: 0 0 100%;
+    flex-direction: column;
+    align-items: stretch;
     margin-left: 0;
-    gap: 10px;
+    gap: 6px;
   }
 
   .pv-navbar-claude {
+    width: 100%;
     flex: 1;
   }
 
+  .pv-navbar-commands {
+    width: 100%;
+  }
+
   .pv-account-select {
-    width: 110px;
+    width: 84px;
+  }
+
+  .pv-provider-select {
+    width: 66px;
   }
 
   .pv-navbar-chat-select {
     width: auto;
-    min-width: 110px;
+    min-width: 0;
     flex: 1;
+  }
+
+  .pv-navbar-context {
+    width: 28px;
+    height: 28px;
+  }
+
+  .pv-navbar-usage {
+    gap: 1px;
   }
 
   .pv-navbar-separator {
@@ -2678,19 +2761,60 @@ kbd {
 
   .pv-quick-action,
   .pv-work-open {
-    width: 30px;
-    padding: 0;
+    width: auto;
+    flex: 1;
+    padding: 0 8px;
     justify-content: center;
   }
 
   .pv-quick-action > span,
   .pv-work-open-label {
-    display: none;
+    display: inline;
   }
 
   .pv-work-open:has(.pv-work-open-count) {
     width: auto;
-    padding: 0 6px;
+    padding: 0 8px;
+  }
+
+  .pv-doc {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 14px 10px 80px;
+  }
+
+  .pv-doc-meta .file-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .pv-doc-meta .dir-path,
+  .pv-doc-meta .loaded {
+    display: none;
+  }
+
+  .pv-surface {
+    padding: 32px 24px 44px 42px;
+  }
+
+  .pv-gutter-btn {
+    left: 7px;
+  }
+
+  .pv-doc-title {
+    font-size: 26px;
+  }
+
+  .markdown-body :not(pre) > code,
+  .markdown-body th,
+  .markdown-body td {
+    overflow-wrap: anywhere;
+  }
+
+  .markdown-body table {
+    table-layout: fixed;
   }
 
   .pv-doc-browse span {

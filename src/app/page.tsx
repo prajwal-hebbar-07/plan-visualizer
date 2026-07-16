@@ -35,9 +35,10 @@ type AskTurn = {
   error?: string;
 };
 
-type ClaudeAccountId = "claude-one" | "claude-two";
+type AgentProvider = "claude" | "codex";
+type AgentAccountId = "claude-one" | "claude-two" | "codex-one";
 
-type ClaudeSessionOption = {
+type AgentSessionOption = {
   id: string;
   title: string;
   updatedAt: string;
@@ -47,7 +48,7 @@ type ClaudeSessionOption = {
   contextWindow?: number;
 };
 
-type ClaudeChatChoice =
+type AgentChatChoice =
   | { kind: "new"; title: string }
   | { kind: "existing"; id: string; title: string };
 
@@ -57,9 +58,29 @@ type SelectOption = {
   meta?: string;
 };
 
+type UsageWindow = {
+  usedPercent: number;
+  resetsAt?: string;
+  windowDurationMins: number;
+};
+
+type UsageLimits = {
+  fiveHour?: UsageWindow;
+  sevenDay?: UsageWindow;
+};
+
+const AGENT_PROVIDER_OPTIONS: SelectOption[] = [
+  { value: "claude", label: "Claude" },
+  { value: "codex", label: "Codex" },
+];
+
 const CLAUDE_ACCOUNT_OPTIONS: SelectOption[] = [
   { value: "claude-one", label: "Account 1" },
   { value: "claude-two", label: "Account 2" },
+];
+
+const CODEX_ACCOUNT_OPTIONS: SelectOption[] = [
+  { value: "codex-one", label: "Account 1" },
 ];
 
 type IconName =
@@ -295,6 +316,19 @@ function formatTokens(tokens: number) {
   return tokens.toLocaleString();
 }
 
+function usageLevel(percent: number | null | undefined) {
+  if (percent === null || percent === undefined) return "unknown";
+  if (percent >= 85) return "danger";
+  if (percent >= 70) return "warning";
+  return "healthy";
+}
+
+function usageTitle(label: string, window: UsageWindow | undefined, provider: AgentProvider) {
+  if (!window) return `${provider === "claude" ? "Claude" : "Codex"} did not return a ${label} limit.`;
+  const reset = window.resetsAt ? ` · resets ${new Date(window.resetsAt).toLocaleString()}` : "";
+  return `${label} usage: ${window.usedPercent}%${reset}`;
+}
+
 function CustomSelect({
   value,
   options,
@@ -402,6 +436,46 @@ function CustomSelect({
   );
 }
 
+function UsageCircle({
+  label,
+  percent,
+  level,
+  title,
+  onRefresh,
+  disabled,
+  error = false,
+}: {
+  label: string;
+  percent: number | null;
+  level: string;
+  title: string;
+  onRefresh: () => void;
+  disabled: boolean;
+  error?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      className={`pv-navbar-context is-${level}${error ? " is-error" : ""}`}
+      onClick={onRefresh}
+      disabled={disabled}
+      title={title}
+      aria-label={title}
+    >
+      <svg viewBox="0 0 32 32" aria-hidden="true">
+        <circle className="track" cx="16" cy="16" r="13" pathLength="100" />
+        {percent !== null && (
+          <circle className="value" cx="16" cy="16" r="13" pathLength="100" strokeDasharray={`${percent} 100`} />
+        )}
+      </svg>
+      <span>
+        <small>{label}</small>
+        <strong>{error ? "!" : percent === null ? "—" : `${percent}%`}</strong>
+      </span>
+    </button>
+  );
+}
+
 function MarkdownBlock({ block }: { block: ContentBlock }) {
   return (
     <ReactMarkdown
@@ -451,12 +525,14 @@ export default function Home() {
   const [selectionAskOpen, setSelectionAskOpen] = useState(false);
   const [selectionAskQuestion, setSelectionAskQuestion] = useState("");
   const [asking, setAsking] = useState(false);
-  const [claudeAccount, setClaudeAccount] = useState<ClaudeAccountId | null>(null);
+  const [agentProvider, setAgentProvider] = useState<AgentProvider>("claude");
+  const [claudeAccount, setClaudeAccount] = useState<AgentAccountId | null>(null);
   const [claudeAccountLabel, setClaudeAccountLabel] = useState("");
-  const [claudeSessions, setClaudeSessions] = useState<ClaudeSessionOption[]>([]);
+  const [claudeSessions, setClaudeSessions] = useState<AgentSessionOption[]>([]);
   const [claudeSessionsLoading, setClaudeSessionsLoading] = useState(false);
   const [claudeSessionsError, setClaudeSessionsError] = useState<string | null>(null);
-  const [claudeChat, setClaudeChat] = useState<ClaudeChatChoice | null>(null);
+  const [claudeChat, setClaudeChat] = useState<AgentChatChoice | null>(null);
+  const [usageLimits, setUsageLimits] = useState<UsageLimits>({});
   const [stepsOpen, setStepsOpen] = useState<Record<number, boolean>>({});
   const [commentError, setCommentError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
@@ -480,16 +556,19 @@ export default function Home() {
   const busy = reviewing || implementing;
   const claudeBusy = reviewing || implementing || asking;
   const claudeReady = claudeAccount !== null && claudeChat !== null;
+  const agentName = agentProvider === "claude" ? "Claude" : "Codex";
+  const accountOptions = agentProvider === "claude" ? CLAUDE_ACCOUNT_OPTIONS : CODEX_ACCOUNT_OPTIONS;
 
   const claudeSelection = useMemo(() => {
     if (!claudeAccount || !claudeChat) return null;
     return {
+      provider: agentProvider,
       accountId: claudeAccount,
       ...(claudeChat.kind === "existing"
         ? { sessionId: claudeChat.id, newChat: false }
         : { newChat: true }),
     };
-  }, [claudeAccount, claudeChat]);
+  }, [agentProvider, claudeAccount, claudeChat]);
 
   const selectedClaudeSession = useMemo(
     () =>
@@ -525,7 +604,7 @@ export default function Home() {
           } · Click to refresh`
         : claudeChat
           ? "Context usage is not available yet · Click to refresh"
-          : "Choose a Claude chat to see context usage";
+          : `Choose a ${agentName} chat to see context usage`;
 
   const claudeChatOptions = useMemo<SelectOption[]>(() => {
     if (!claudeAccount) return [];
@@ -631,6 +710,7 @@ export default function Home() {
         setClaudeSessionsLoading(false);
         setClaudeSessionsError(null);
         setClaudeChat(null);
+        setUsageLimits({});
       }
       window.localStorage.setItem("plan-visualizer:last-path", data.path);
       return true;
@@ -901,38 +981,61 @@ export default function Home() {
     setImplementBranch(null);
   }, []);
 
+  const chooseAgentProvider = useCallback(
+    (provider: AgentProvider) => {
+      if (claudeBusy || provider === agentProvider) return;
+      sessionListAbort.current?.abort();
+      sessionListAbort.current = null;
+      setAgentProvider(provider);
+      setClaudeAccount(null);
+      setClaudeAccountLabel("");
+      setClaudeChat(null);
+      setClaudeSessions([]);
+      setClaudeSessionsError(null);
+      setClaudeSessionsLoading(false);
+      setUsageLimits({});
+      clearClaudeOutput();
+    },
+    [agentProvider, claudeBusy, clearClaudeOutput],
+  );
+
   const chooseClaudeAccount = useCallback(
-    async (accountId: ClaudeAccountId) => {
+    async (accountId: AgentAccountId) => {
       if (!document || claudeBusy) return;
       sessionListAbort.current?.abort();
       const controller = new AbortController();
       sessionListAbort.current = controller;
 
       setClaudeAccount(accountId);
-      setClaudeAccountLabel(accountId === "claude-one" ? "Claude account 1" : "Claude account 2");
+      setClaudeAccountLabel(
+        `${agentProvider === "claude" ? "Claude" : "Codex"} account ${accountId.endsWith("one") ? "1" : "2"}`,
+      );
       setClaudeChat(null);
       setClaudeSessions([]);
       setClaudeSessionsError(null);
       setClaudeSessionsLoading(true);
+      setUsageLimits({});
       clearClaudeOutput();
 
       try {
-        const query = new URLSearchParams({ path: document.path, accountId });
-        const response = await fetch(`/api/claude/sessions?${query}`, {
+        const query = new URLSearchParams({ path: document.path, provider: agentProvider, accountId });
+        const response = await fetch(`/api/agents/sessions?${query}`, {
           signal: controller.signal,
           cache: "no-store",
         });
         if (!response.ok) throw new Error((await readApiError(response)).message);
         const data = (await response.json()) as {
-          account: { id: ClaudeAccountId; label: string };
-          sessions: ClaudeSessionOption[];
+          account: { id: AgentAccountId; label: string };
+          sessions: AgentSessionOption[];
+          usage: UsageLimits;
         };
         if (controller.signal.aborted) return;
         setClaudeAccountLabel(data.account.label);
         setClaudeSessions(data.sessions);
+        setUsageLimits(data.usage ?? {});
       } catch (error) {
         if (!controller.signal.aborted) {
-          setClaudeSessionsError(error instanceof Error ? error.message : "Claude chats could not be loaded.");
+          setClaudeSessionsError(error instanceof Error ? error.message : "Agent chats could not be loaded.");
         }
       } finally {
         if (sessionListAbort.current === controller) {
@@ -941,7 +1044,7 @@ export default function Home() {
         }
       }
     },
-    [document, claudeBusy, clearClaudeOutput],
+    [document, agentProvider, claudeBusy, clearClaudeOutput],
   );
 
   const refreshClaudeSessions = useCallback(async () => {
@@ -953,19 +1056,21 @@ export default function Home() {
     setClaudeSessionsLoading(true);
 
     try {
-      const query = new URLSearchParams({ path: document.path, accountId: claudeAccount });
-      const response = await fetch(`/api/claude/sessions?${query}`, {
+      const query = new URLSearchParams({ path: document.path, provider: agentProvider, accountId: claudeAccount });
+      const response = await fetch(`/api/agents/sessions?${query}`, {
         signal: controller.signal,
         cache: "no-store",
       });
       if (!response.ok) throw new Error((await readApiError(response)).message);
       const data = (await response.json()) as {
-        account: { id: ClaudeAccountId; label: string };
-        sessions: ClaudeSessionOption[];
+        account: { id: AgentAccountId; label: string };
+        sessions: AgentSessionOption[];
+        usage: UsageLimits;
       };
       if (controller.signal.aborted) return;
       setClaudeAccountLabel(data.account.label);
       setClaudeSessions(data.sessions);
+      setUsageLimits(data.usage ?? {});
       setClaudeChat((current) => {
         if (current?.kind !== "existing") return current;
         const refreshed = data.sessions.find((session) => session.id === current.id);
@@ -973,7 +1078,7 @@ export default function Home() {
       });
     } catch (error) {
       if (!controller.signal.aborted) {
-        setClaudeSessionsError(error instanceof Error ? error.message : "Claude chats could not be loaded.");
+        setClaudeSessionsError(error instanceof Error ? error.message : "Agent chats could not be loaded.");
       }
     } finally {
       if (sessionListAbort.current === controller) {
@@ -981,7 +1086,7 @@ export default function Home() {
         sessionListAbort.current = null;
       }
     }
-  }, [document, claudeAccount]);
+  }, [document, agentProvider, claudeAccount]);
 
   const chooseClaudeChat = useCallback(
     (value: string) => {
@@ -1056,16 +1161,16 @@ export default function Home() {
 
       if (documentPathRef.current === reviewedPath) {
         const refreshed = await openDocument(reviewedPath);
-        if (!refreshed) throw new Error("Claude finished, but the updated plan could not be reloaded.");
+        if (!refreshed) throw new Error(`${agentName} finished, but the updated plan could not be reloaded.`);
       }
-      showToast("Claude finished the plan review");
+      showToast(`${agentName} finished the plan review`);
     } catch (error) {
-      setReviewError(error instanceof Error ? error.message : "Claude could not run the plan review.");
+      setReviewError(error instanceof Error ? error.message : `${agentName} could not run the plan review.`);
     } finally {
       setReviewing(false);
       void refreshClaudeSessions();
     }
-  }, [document, claudeSelection, claudeBusy, openDocument, promoteClaudeSession, refreshClaudeSessions, showToast]);
+  }, [document, claudeSelection, claudeBusy, agentName, openDocument, promoteClaudeSession, refreshClaudeSessions, showToast]);
 
   const stopImplement = useCallback(() => {
     implementAbort.current?.abort();
@@ -1118,7 +1223,7 @@ export default function Home() {
           if (event.type === "session") {
             promoteClaudeSession(event.sessionId);
           } else if (event.type === "error") {
-            sawError = event.error ?? "Claude could not implement the plan.";
+            sawError = event.error ?? `${agentName} could not implement the plan.`;
           } else if (event.type === "done") {
             if (event.branch) setImplementBranch(event.branch);
             promoteClaudeSession(event.sessionId);
@@ -1133,18 +1238,18 @@ export default function Home() {
       }
 
       if (sawError) setImplementError(sawError);
-      else showToast("Claude finished implementing the plan");
+      else showToast(`${agentName} finished implementing the plan`);
     } catch (error) {
       if (controller.signal.aborted) showToast("Stopped implementation");
-      else setImplementError(error instanceof Error ? error.message : "Claude could not implement the plan.");
+      else setImplementError(error instanceof Error ? error.message : `${agentName} could not implement the plan.`);
     } finally {
       setImplementing(false);
       implementAbort.current = null;
-      // Claude may have changed files (including the plan); reload it in place.
+      // The agent may have changed files (including the plan); reload it in place.
       if (documentPathRef.current === targetPath) await openDocument(targetPath);
       void refreshClaudeSessions();
     }
-  }, [document, claudeSelection, claudeBusy, openDocument, promoteClaudeSession, refreshClaudeSessions, showToast]);
+  }, [document, claudeSelection, claudeBusy, agentName, openDocument, promoteClaudeSession, refreshClaudeSessions, showToast]);
 
   const stopAsk = useCallback(() => {
     askAbort.current?.abort();
@@ -1223,7 +1328,7 @@ export default function Home() {
         }
       } catch (error) {
         if (!controller.signal.aborted) {
-          const message = error instanceof Error ? error.message : "Claude could not answer.";
+          const message = error instanceof Error ? error.message : `${agentName} could not answer.`;
           update((turn) => ({ ...turn, error: message }));
         }
       } finally {
@@ -1233,7 +1338,7 @@ export default function Home() {
         void refreshClaudeSessions();
       }
     },
-    [document, claudeSelection, claudeBusy, promoteClaudeSession, refreshClaudeSessions],
+    [document, claudeSelection, claudeBusy, agentName, promoteClaudeSession, refreshClaudeSessions],
   );
 
   const askAboutSelection = useCallback((text: string) => {
@@ -1286,15 +1391,24 @@ export default function Home() {
           {document && (
             <div className="pv-navbar-actions">
               <div className="pv-navbar-claude">
+                <CustomSelect
+                  value={agentProvider}
+                  options={AGENT_PROVIDER_OPTIONS}
+                  placeholder="Choose agent…"
+                  onChange={(value) => chooseAgentProvider(value as AgentProvider)}
+                  disabled={claudeBusy}
+                  ariaLabel="Choose agent provider"
+                  className="pv-provider-select"
+                />
                 <div className="pv-navbar-account" title={claudeAccountLabel || undefined}>
-                  <span>Claude account</span>
+                  <span>Account</span>
                   <CustomSelect
                     value={claudeAccount ?? ""}
-                    options={CLAUDE_ACCOUNT_OPTIONS}
+                    options={accountOptions}
                     placeholder="Choose account…"
-                    onChange={(value) => void chooseClaudeAccount(value as ClaudeAccountId)}
+                    onChange={(value) => void chooseClaudeAccount(value as AgentAccountId)}
                     disabled={claudeBusy}
-                    ariaLabel="Choose Claude account"
+                    ariaLabel={`Choose ${agentName} account`}
                     className="pv-account-select"
                   />
                 </div>
@@ -1312,34 +1426,36 @@ export default function Home() {
                   }
                   onChange={chooseClaudeChat}
                   disabled={!claudeAccount || claudeBusy || claudeSessionsLoading}
-                  ariaLabel="Choose Claude chat"
+                  ariaLabel={`Choose ${agentName} chat`}
                   className="pv-navbar-chat-select"
                 />
-                <button
-                  type="button"
-                  className={`pv-navbar-context is-${navbarContextLevel}${claudeSessionsError ? " is-error" : ""}`}
-                  onClick={() => void refreshClaudeSessions()}
-                  disabled={!claudeAccount || claudeBusy || claudeSessionsLoading}
-                  title={navbarContextTitle}
-                  aria-label={navbarContextTitle}
-                >
-                  <svg viewBox="0 0 32 32" aria-hidden="true">
-                    <circle className="track" cx="16" cy="16" r="13" pathLength="100" />
-                    {navbarContextPercent !== null && (
-                      <circle
-                        className="value"
-                        cx="16"
-                        cy="16"
-                        r="13"
-                        pathLength="100"
-                        strokeDasharray={`${navbarContextPercent} 100`}
-                      />
-                    )}
-                  </svg>
-                  <span>
-                    {claudeSessionsError ? "!" : navbarContextPercent === null ? "—" : `${navbarContextPercent}%`}
-                  </span>
-                </button>
+                <div className="pv-navbar-usage" aria-label={`${agentName} context and account usage`}>
+                  <UsageCircle
+                    label="ctx"
+                    percent={navbarContextPercent}
+                    level={navbarContextLevel}
+                    title={navbarContextTitle}
+                    onRefresh={() => void refreshClaudeSessions()}
+                    disabled={!claudeAccount || claudeBusy || claudeSessionsLoading}
+                    error={Boolean(claudeSessionsError)}
+                  />
+                  <UsageCircle
+                    label="5h"
+                    percent={usageLimits.fiveHour?.usedPercent ?? null}
+                    level={usageLevel(usageLimits.fiveHour?.usedPercent)}
+                    title={usageTitle("5-hour", usageLimits.fiveHour, agentProvider)}
+                    onRefresh={() => void refreshClaudeSessions()}
+                    disabled={!claudeAccount || claudeBusy || claudeSessionsLoading}
+                  />
+                  <UsageCircle
+                    label="7d"
+                    percent={usageLimits.sevenDay?.usedPercent ?? null}
+                    level={usageLevel(usageLimits.sevenDay?.usedPercent)}
+                    title={usageTitle("7-day", usageLimits.sevenDay, agentProvider)}
+                    onRefresh={() => void refreshClaudeSessions()}
+                    disabled={!claudeAccount || claudeBusy || claudeSessionsLoading}
+                  />
+                </div>
               </div>
               <div className="pv-navbar-commands">
                 <span className="pv-navbar-separator" />
@@ -1348,7 +1464,7 @@ export default function Home() {
                   className={`pv-quick-action${reviewing ? " is-running" : ""}`}
                   onClick={() => void runPlanReview()}
                   disabled={claudeBusy || !claudeReady}
-                  title={!claudeReady ? "Choose a Claude account and chat first" : "Run plan review"}
+                  title={!claudeReady ? `Choose a ${agentName} account and chat first` : "Run plan review"}
                 >
                   <Icon name={reviewing ? "spinner" : "comment"} size={12} />
                   <span>{reviewing ? "Reviewing…" : "Run review"}</span>
@@ -1360,7 +1476,7 @@ export default function Home() {
                   disabled={reviewing || asking || (!implementing && !claudeReady)}
                   title={
                     !claudeReady
-                      ? "Choose a Claude account and chat first"
+                      ? `Choose a ${agentName} account and chat first`
                       : implementing
                         ? "Stop implementation"
                         : "Implement plan"
@@ -1635,7 +1751,7 @@ export default function Home() {
                       type="button"
                       onClick={() => void runPlanReview()}
                       disabled={claudeBusy || !claudeReady}
-                      title={!claudeReady ? "Choose a Claude account and chat first" : "Run review command"}
+                      title={!claudeReady ? `Choose a ${agentName} account and chat first` : "Run review command"}
                     >
                       {reviewing && <Icon name="spinner" size={12} />}
                       {reviewing ? "Reviewing…" : "Run review"}
@@ -1644,7 +1760,7 @@ export default function Home() {
                   {reviewing && (
                     <div className="pv-runcard-progress">
                       <span className="dot" />
-                      Claude is reviewing the plan…
+                      {agentName} is reviewing the plan…
                     </div>
                   )}
                   {reviewError && <div className="pv-runcard-error" role="alert">{reviewError}</div>}
@@ -1758,8 +1874,8 @@ export default function Home() {
                       <strong>Ask about this plan</strong>
                       <p>
                         {claudeReady
-                          ? "Questions use the selected chat in read-only mode. Review and implementation use their own command permissions."
-                          : "Choose a Claude account and chat above before sending a question."}
+                          ? `Questions use the selected ${agentName} chat in read-only mode. Review and implementation use their own command permissions.`
+                          : `Choose a ${agentName} account and chat above before sending a question.`}
                       </p>
                     </div>
                   ) : (
@@ -1978,7 +2094,7 @@ export default function Home() {
               </button>
             </div>
             <p className="pv-selection-ask-intro">
-              Your question will use the selected Claude chat in read-only mode.
+              Your question will use the selected {agentName} chat in read-only mode.
             </p>
             <div className="pv-composer-quote">“{askSelection}”</div>
             <textarea
@@ -1998,7 +2114,7 @@ export default function Home() {
             />
             {!claudeReady && (
               <div className="pv-selection-ask-warning">
-                Choose a Claude account and chat from Review &amp; Ask before sending this question.
+                Choose a {agentName} account and chat in the navbar before sending this question.
               </div>
             )}
             <div className="pv-composer-actions">
@@ -2014,7 +2130,7 @@ export default function Home() {
                 onClick={submitSelectionAsk}
                 disabled={!selectionAskQuestion.trim() || !claudeReady || claudeBusy}
               >
-                Ask Claude
+                Ask {agentName}
               </button>
             </div>
           </div>

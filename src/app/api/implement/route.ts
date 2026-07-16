@@ -1,15 +1,15 @@
 /**
- * POST /api/implement — implement a plan with Claude Code on a dedicated branch.
+ * POST /api/implement — implement a plan with Claude Code or Codex on a dedicated branch.
  *
  * Checks out `plan/<slug>` in the plan's git repository (so generated changes
- * stay isolated), then spawns `claude --print --output-format stream-json` with
- * `--permission-mode bypassPermissions` so Claude can edit files and run
- * commands unattended. Claude's events are transformed into a small NDJSON
+ * stay isolated), then starts the manually selected agent with implementation
+ * permissions so it can edit files and run commands unattended. Provider
+ * events are transformed into a small NDJSON
  * protocol and streamed to the browser as they arrive:
  *
  *   { "type": "status",    "text": "..." }        setup / lifecycle notes
  *   { "type": "assistant", "text": "..." }        assistant narration
- *   { "type": "tool",      "text": "..." }         a tool Claude ran
+ *   { "type": "tool",      "text": "..." }         a tool the agent ran
  *   { "type": "result",    "text": "...", "ok": true }  final summary
  *   { "type": "error",     "error": "..." }
  *   { "type": "done",      "branch": "plan/<slug>", "sessionId": "..." }
@@ -21,16 +21,21 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import { resolvePlanPath } from "@/lib/plan-file";
+import { acquireAgentSession, AgentContextError, resolveAgentRunContext } from "@/lib/agent-cli";
 import {
-  acquireClaudeSession,
   claudeSessionArgs,
   claudeEnv,
-  ClaudeContextError,
   execFileAsync,
   findClaudeBinary,
   gitToplevel,
-  resolveClaudeRunContext,
 } from "@/lib/claude-cli";
+import {
+  codexEnv,
+  codexEventError,
+  codexExecArgs,
+  findCodexBinary,
+  parseCodexJsonLine,
+} from "@/lib/codex-cli";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -103,7 +108,7 @@ type ClientEvent =
   | { type: "result"; text: string; ok: boolean }
   | { type: "error"; error: string }
   | { type: "session"; sessionId: string }
-  | { type: "done"; branch: string; sessionId: string };
+  | { type: "done"; branch: string; sessionId?: string };
 
 function summarizeToolUse(name: string, input: unknown, cwd: string): string {
   if (!input || typeof input !== "object") return name;
@@ -118,8 +123,29 @@ function summarizeToolUse(name: string, input: unknown, cwd: string): string {
   return name;
 }
 
-/** Turn one Claude stream-json line into zero or more client events. */
-function transformLine(line: string, cwd: string): ClientEvent[] {
+/** Turn one provider JSONL line into zero or more client events. */
+function transformLine(line: string, cwd: string, provider: "claude" | "codex"): ClientEvent[] {
+  if (provider === "codex") {
+    const event = parseCodexJsonLine(line);
+    if (!event) return [];
+    if (event.type === "thread.started" && event.thread_id) {
+      return [{ type: "session", sessionId: event.thread_id }];
+    }
+    if (event.type === "item.completed" && event.item?.type === "agent_message" && event.item.text?.trim()) {
+      return [{ type: "assistant", text: event.item.text.trim().slice(0, 2000) }];
+    }
+    if (event.type === "item.completed" && event.item?.type === "command_execution") {
+      return [{ type: "tool", text: `$ ${event.item.command || "command"}`.slice(0, 2000) }];
+    }
+    if (event.type === "item.completed" && event.item?.type === "file_change") {
+      const changed = event.item.changes?.map((change) => change.path).filter(Boolean).join(", ");
+      return [{ type: "tool", text: changed ? `Changed ${changed}`.slice(0, 2000) : "Updated files" }];
+    }
+    if (event.type === "turn.failed" || event.type === "error") {
+      return [{ type: "error", error: codexEventError(event) || "Codex could not implement the plan." }];
+    }
+    return [];
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(line);
@@ -155,28 +181,27 @@ function transformLine(line: string, cwd: string): ClientEvent[] {
 
 export async function POST(request: Request) {
   let filePath: string;
-  let context: Awaited<ReturnType<typeof resolveClaudeRunContext>>;
+  let context: Awaited<ReturnType<typeof resolveAgentRunContext>>;
   try {
     const body = (await request.json()) as {
       path?: unknown;
+      provider?: unknown;
       accountId?: unknown;
       sessionId?: unknown;
       newChat?: unknown;
     };
     filePath = await resolvePlanPath(body.path);
-    context = await resolveClaudeRunContext(filePath, body);
+    context = await resolveAgentRunContext(filePath, body);
   } catch (error) {
-    if (error instanceof ClaudeContextError) {
+    if (error instanceof AgentContextError) {
       return Response.json({ error: error.message, code: error.code }, { status: error.status });
     }
     const message = error instanceof Error ? error.message : "The plan path is invalid.";
     return Response.json({ error: message }, { status: 400 });
   }
 
-  const claudeBinary = await findClaudeBinary();
-
   if (activeImplements.has(filePath)) {
-    return Response.json({ error: "Claude is already implementing this plan." }, { status: 409 });
+    return Response.json({ error: "An agent is already implementing this plan." }, { status: 409 });
   }
   activeImplements.add(filePath);
 
@@ -192,15 +217,16 @@ export async function POST(request: Request) {
     );
   }
 
-  const env = claudeEnv(context.configDir);
+  const binary = context.provider === "claude" ? await findClaudeBinary() : await findCodexBinary();
+  const env = context.provider === "claude" ? claudeEnv(context.configDir) : codexEnv(context.configDir);
   const branch = branchName(filePath);
 
   let releaseSession: () => void;
   try {
-    releaseSession = acquireClaudeSession(context, "implementation");
+    releaseSession = acquireAgentSession(context, "implementation");
   } catch (error) {
     activeImplements.delete(filePath);
-    if (error instanceof ClaudeContextError) {
+    if (error instanceof AgentContextError) {
       return Response.json({ error: error.message, code: error.code }, { status: error.status });
     }
     throw error;
@@ -222,6 +248,7 @@ export async function POST(request: Request) {
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       let closed = false;
+      let activeSessionId = context.provider === "claude" ? context.sessionId : "";
       const send = (event: ClientEvent) => {
         if (closed) return;
         try {
@@ -239,29 +266,34 @@ export async function POST(request: Request) {
       };
 
       send({ type: "status", text: branchStatus });
-      send({ type: "status", text: "Claude is implementing the plan…" });
-      send({ type: "session", sessionId: context.sessionId });
+      send({
+        type: "status",
+        text: `${context.provider === "claude" ? "Claude" : "Codex"} is implementing the plan…`,
+      });
+      if (context.provider === "claude") send({ type: "session", sessionId: context.sessionId });
 
       try {
         child = spawn(
-          claudeBinary,
-          [
-            "--print",
-            "--permission-mode",
-            "bypassPermissions",
-            "--output-format",
-            "stream-json",
-            "--verbose",
-            ...claudeSessionArgs(context),
-            implementPrompt(filePath),
-          ],
+          binary,
+          context.provider === "claude"
+            ? [
+                "--print",
+                "--permission-mode",
+                "bypassPermissions",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                ...claudeSessionArgs(context),
+                implementPrompt(filePath),
+              ]
+            : codexExecArgs(context, "implementation", implementPrompt(filePath)),
           { cwd, env },
         );
       } catch (error) {
         activeImplements.delete(filePath);
         releaseSession();
-        send({ type: "error", error: error instanceof Error ? error.message : "Claude could not start." });
-        send({ type: "done", branch, sessionId: context.sessionId });
+        send({ type: "error", error: error instanceof Error ? error.message : "The agent could not start." });
+        send({ type: "done", branch, ...(activeSessionId ? { sessionId: activeSessionId } : {}) });
         finish();
         return;
       }
@@ -305,7 +337,12 @@ export async function POST(request: Request) {
         while ((index = stdoutBuffer.indexOf("\n")) >= 0) {
           const line = stdoutBuffer.slice(0, index).trim();
           stdoutBuffer = stdoutBuffer.slice(index + 1);
-          if (line) for (const event of transformLine(line, cwd)) send(event);
+          if (line) {
+            for (const event of transformLine(line, cwd, context.provider)) {
+              if (event.type === "session") activeSessionId = event.sessionId;
+              send(event);
+            }
+          }
         }
       });
 
@@ -320,17 +357,22 @@ export async function POST(request: Request) {
           type: "error",
           error:
             error.code === "ENOENT"
-              ? "Claude Code was not found. Set CLAUDE_BIN to the Claude executable and restart the app."
+              ? "The selected agent CLI was not found. Configure CLAUDE_BIN or CODEX_BIN and restart the app."
               : error.message,
         });
-        send({ type: "done", branch, sessionId: context.sessionId });
+        send({ type: "done", branch, ...(activeSessionId ? { sessionId: activeSessionId } : {}) });
         finish();
       });
 
       child.on("close", (code) => {
         cleanup();
         const rest = stdoutBuffer.trim();
-        if (rest) for (const event of transformLine(rest, cwd)) send(event);
+        if (rest) {
+          for (const event of transformLine(rest, cwd, context.provider)) {
+            if (event.type === "session") activeSessionId = event.sessionId;
+            send(event);
+          }
+        }
 
         if (timedOut) {
           send({ type: "error", error: "Implementation stopped after 60 minutes." });
@@ -339,10 +381,10 @@ export async function POST(request: Request) {
         } else if (code !== 0) {
           send({
             type: "error",
-            error: stderrTail.trim() || `Claude exited with code ${code ?? "unknown"}.`,
+            error: stderrTail.trim() || `The agent exited with code ${code ?? "unknown"}.`,
           });
         }
-        send({ type: "done", branch, sessionId: context.sessionId });
+        send({ type: "done", branch, ...(activeSessionId ? { sessionId: activeSessionId } : {}) });
         finish();
       });
     },

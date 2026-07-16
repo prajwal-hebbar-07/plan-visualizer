@@ -6,7 +6,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { access, readdir, stat } from "node:fs/promises";
+import { access, readFile, readdir, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -26,6 +26,17 @@ export type ClaudeSessionOption = {
   model?: string;
   contextTokens?: number;
   contextWindow?: number;
+};
+
+export type UsageWindow = {
+  usedPercent: number;
+  resetsAt?: string;
+  windowDurationMins: number;
+};
+
+export type UsageLimits = {
+  fiveHour?: UsageWindow;
+  sevenDay?: UsageWindow;
 };
 
 export type ClaudeRunContext = {
@@ -252,6 +263,33 @@ async function readSessionOption(filePath: string, projectRoot: string): Promise
   };
 }
 
+function claudeUsageWindow(value: unknown, windowDurationMins: number): UsageWindow | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const row = value as Record<string, unknown>;
+  if (typeof row.utilization !== "number" || !Number.isFinite(row.utilization)) return undefined;
+  return {
+    usedPercent: Math.max(0, Math.min(100, Math.round(row.utilization))),
+    windowDurationMins,
+    ...(typeof row.resets_at === "string" ? { resetsAt: row.resets_at } : {}),
+  };
+}
+
+/** Sanitized cached subscription usage written by Claude Code for this profile. */
+export async function readClaudeUsage(configDir: string): Promise<UsageLimits> {
+  try {
+    const raw = JSON.parse(await readFile(path.join(configDir, ".claude.json"), "utf8")) as Record<string, unknown>;
+    const cache = raw.cachedUsageUtilization as Record<string, unknown> | undefined;
+    const utilization = cache?.utilization as Record<string, unknown> | undefined;
+    if (!utilization) return {};
+    return {
+      fiveHour: claudeUsageWindow(utilization.five_hour, 5 * 60),
+      sevenDay: claudeUsageWindow(utilization.seven_day, 7 * 24 * 60),
+    };
+  } catch {
+    return {};
+  }
+}
+
 /** Sanitized existing chats for one account, limited to the plan repository. */
 export async function listClaudeSessions(accountId: unknown, planPath: string) {
   const [account, projectRoot] = await Promise.all([
@@ -263,7 +301,8 @@ export async function listClaudeSessions(accountId: unknown, planPath: string) {
     .filter((session): session is ClaudeSessionOption => session !== null)
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     .slice(0, 60);
-  return { account: { id: account.id, label: account.label }, sessions };
+  const usage = await readClaudeUsage(account.configDir);
+  return { account: { id: account.id, label: account.label }, sessions, usage };
 }
 
 /** Validate the user's manual account/chat choice and decide resume vs new. */

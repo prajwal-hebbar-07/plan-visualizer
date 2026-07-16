@@ -4,14 +4,14 @@ A local-first review surface for Markdown implementation plans. Choose a local
 plan file, read it as a clean, editorial document, and attach
 review comments that are written **directly back into the original file** as
 `<!-- @me -->` HTML markers. When you're ready, hand the annotated plan to
-Claude Code to resolve every note in place.
+Claude Code or Codex to resolve every note in place.
 
 Nothing leaves your machine: the app runs on `127.0.0.1`, reads and writes the
 file with the Node filesystem API, and stores no database and no account.
 
 ```
   read a plan  ─▶  annotate  ─▶  Run plan review  ─▶  reload  ─▶  Implement plan
-  (rendered)      (@me marks)     (Claude Code)      (resolved)   (Claude, on a branch)
+  (rendered)      (@me marks)     (Claude/Codex)      (resolved)   (agent, on a branch)
 ```
 
 ---
@@ -45,22 +45,24 @@ file with the Node filesystem API, and stores no database and no account.
 - **File-native.** Every note is appended to the source `.md` as an `@me` HTML
   comment right beside the block it refers to. There is no separate store to
   keep in sync — the plan file *is* the state.
-- **One-click resolution.** **Run plan review** invokes Claude Code with
-  `/plan-review <plan>`; Claude edits the plan to satisfy your notes, and the
-  app reloads the updated file when it finishes.
+- **One-click resolution.** **Run plan review** invokes the selected Claude Code
+  or Codex chat; the agent edits the plan to satisfy your notes, and the app
+  reloads the updated file when it finishes.
 - **One-click implementation.** **Implement plan** checks out a dedicated
-  `plan/<slug>` branch and runs Claude Code with full tool access to build the
+  `plan/<slug>` branch and runs the selected agent with full access to build the
   plan, streaming its narration, tool calls, and result into a live log you can
   **Stop** at any time.
-- **Ask about the plan.** The **Ask** tab is a read-only Q&A with Claude about
+- **Ask about the plan.** The **Ask** tab is a read-only Q&A with the selected agent about
   the open plan — grounded in the plan file and the repository, with a
   persistent session so follow-up questions keep their context. Select text and
   hit **Ask** to question a specific part.
-- **Manual Claude context.** Choose Claude account 1 or 2, then explicitly pick
-  an existing repository chat or **New chat**. Ask, review, and implementation
-  use that choice but retain their own command-specific permissions. The
-  selected chat shows its context percentage in the navbar so it is clear when
-  to open a fresh chat.
+- **Manual agent context.** Choose Claude or Codex, then choose one of the two
+  Claude accounts or the single Codex account and explicitly pick an existing
+  repository chat or **New chat**. Ask, review, and
+  implementation use that choice but retain their own command-specific
+  permissions. Navbar rings show the selected chat's context usage and the
+  provider's reported 5-hour and 7-day usage. A dash means the provider did not
+  report that window.
 - **Safe writes.** Saves are atomic and guarded by the file's modification time
   and the exact source text of the annotated block, so a plan edited elsewhere
   is never silently clobbered.
@@ -78,22 +80,21 @@ not be exposed to the network.
    ├─▶ POST  /api/document        read a plan file  ──▶  fs.readFile
    ├─▶ PATCH /api/document        insert an @me note ──▶ atomic write (temp + rename)
    ├─▶ POST  /api/document/pick   native file chooser ─▶ osascript (macOS)
-   ├─▶ GET   /api/claude/sessions list chats ─────────▶ profile JSONL metadata
-   ├─▶ POST  /api/review          resolve notes ──────▶ claude /plan-review
-   ├─▶ POST  /api/implement       build the plan ─────▶ git branch + claude (streamed)
-   └─▶ POST  /api/ask             answer questions ───▶ claude (read-only, streamed)
+   ├─▶ GET   /api/agents/sessions list chats/usage ───▶ local provider metadata
+   ├─▶ POST  /api/review          resolve notes ──────▶ Claude/Codex
+   ├─▶ POST  /api/implement       build the plan ─────▶ git branch + agent (streamed)
+   └─▶ POST  /api/ask             answer questions ───▶ agent (read-only, streamed)
 ```
 
-`/api/review`, `/api/implement`, and `/api/ask` share the Claude/git plumbing in
-`src/lib/claude-cli.ts` (validating the chosen account/chat, locating the binary,
-and resolving the repo).
-Review blocks until Claude finishes and returns the result; implement and ask
-**stream** Claude's `stream-json` events to the browser as newline-delimited JSON
-so the UI can show live progress and cancel the run. Ask keeps a per-plan Claude
-selected session (`--session-id` for an explicit New chat, then `--resume`) so
-all command types keep the chosen context. Ask restricts Claude to read-only
-tools (`Read`, `Grep`, `Glob`); review and implementation select their own
-permissions from the action that was clicked.
+`/api/review`, `/api/implement`, and `/api/ask` share provider-neutral routing in
+`src/lib/agent-cli.ts`, with CLI-specific session discovery and commands in
+`claude-cli.ts` and `codex-cli.ts`. The app validates the manually chosen
+provider, account, and chat before every command.
+Review blocks until the agent finishes and returns the result; implement and ask
+**stream** provider events to the browser as newline-delimited JSON so the UI
+can show live progress and cancel the run. New chats are promoted to their real
+session ID as soon as the provider creates one. Ask is always read-only; review
+and implementation select permissions from the action that was clicked.
 
 Plan text is parsed **client-side** by `src/lib/plan-document.ts` into a flat
 list of blocks — content blocks (paragraphs, headings, fenced code) and comment
@@ -112,12 +113,12 @@ slide-over.
    change and save — the note is inserted into the file next to that block.
 3. Each saved note renders inline in the document *and* in the **Review & Ask**
    slide-over, tagged **Pending review**. Click a card to jump to its location.
-4. **Run plan review.** Claude Code opens the plan, resolves every `@me` note
+4. **Run plan review.** The selected agent opens the plan and resolves every `@me` note
    (editing the plan and removing the markers as your `/plan-review` workflow
    dictates), and the app reloads the file so you see the result.
 5. Repeat until the plan reads the way you want.
 6. **Implement plan.** When you're happy with it, hit **Implement plan**. The
-   app checks out a `plan/<slug>` branch and runs Claude Code with full tool
+   app checks out a `plan/<slug>` branch and runs the selected agent with full
    access to build the plan, streaming a live log of what it edits and runs.
    **Stop** ends the run immediately; when it finishes the plan is reloaded.
 
@@ -159,8 +160,9 @@ selection (if any) and the comment body.
 - **macOS** for the native **Browse…** file chooser (it shells out to
   `osascript`). On other platforms, open an absolute path with the `?path=` URL
   parameter — everything else works cross-platform.
-- **Claude Code** for the **Run plan review** and **Implement plan** buttons,
-  with a profile that contains the `plan-review` skill. Optional otherwise.
+- **Claude Code and/or Codex CLI**, authenticated in each configured account
+  home. You only need the provider you intend to select. Claude plan review uses
+  the profile's `plan-review` skill; Codex receives the equivalent review prompt.
 - **Git**: the plan must live inside a git repository to use **Implement plan**
   (it works on a dedicated branch). Reading and reviewing don't require git.
 
@@ -180,10 +182,11 @@ server). Both commands bind to `127.0.0.1`.
 
 - **Open a file:** click **Browse** in the document metadata row or **Choose a
   plan file** on the empty state.
-- **Choose Claude context:** use the custom account and chat menus in the
-  navbar to choose an existing repository chat or **New chat**. No account or
-  chat is preselected. The circular indicator shows the latest context usage
-  percentage and refreshes after each command; click it to refresh manually.
+- **Choose agent context:** use the custom provider, account, and chat menus in
+  the navbar to choose an existing repository chat or **New chat**. No account
+  or chat is preselected. The `ctx`, `5h`, and `7d` rings show the latest
+  context and provider usage percentages; hover for reset details and click a
+  ring to refresh manually.
 - **Comment on a block:** hover it and click the round control that appears in
   the left margin.
 - **Comment on a selection:** select text in the document and click the floating
@@ -192,11 +195,11 @@ server). Both commands bind to `127.0.0.1`.
   note** (or press `⌘↵` / `Ctrl+↵`). Comments are capped at 4,000 characters,
   selections at 2,000.
 - **Run the review:** click **Run review** in the navbar or use the half-screen
-  **Review & Ask** slide-over. The action is disabled while Claude is working;
+  **Review & Ask** slide-over. The action is disabled while the agent is working;
   the plan reloads automatically when it finishes.
 - **Implement the plan:** click **Implement** in the navbar or use the
   **Implement** section in the slide-over.
-  Claude works on a fresh `plan/<slug>` branch and its progress streams into a
+  The agent works on a fresh `plan/<slug>` branch and its progress streams into a
   live log; click **Stop implementation** to end it early. Editing is disabled
   while a run is in progress. The plan is reloaded when the run ends.
 - **Ask about the plan:** switch to the **Ask about plan** tab and type a
@@ -229,10 +232,15 @@ Set in `.env.local` (see `.env.example`):
 | `CLAUDE_ONE_LABEL` | `Claude account 1` | Optional account 1 display label |
 | `CLAUDE_TWO_LABEL` | `Claude account 2` | Optional account 2 display label |
 | `CLAUDE_BIN` | `~/.local/bin/claude` or `PATH` | Path to the Claude Code executable |
+| `CODEX_ONE_HOME` | `CODEX_HOME` or `~/.codex` | Home for Codex account 1 |
+| `CODEX_ONE_LABEL` | `Codex account 1` | Optional account 1 display label |
+| `CODEX_BIN` | `codex` on `PATH` | Path to the Codex executable |
 
-All Claude actions use the manually selected account. When `CLAUDE_BIN` is
-unset the app tries `~/.local/bin/claude` and then `claude` on `PATH`. Review
-runs with `cwd` at the nearest `.git` ancestor of the plan;
+All actions use the manually selected provider and account. The Codex account
+uses its configured home directory for authentication and session history.
+When `CLAUDE_BIN` is unset the app tries
+`~/.local/bin/claude` and then `claude` on `PATH`; `CODEX_BIN` defaults to
+`codex`. Review runs with `cwd` at the nearest `.git` ancestor of the plan;
 implement uses the plan's git top-level directory and requires the plan to live
 inside a git repository (so it can work on a branch).
 
@@ -255,16 +263,16 @@ inside a git repository (so it can work on a branch).
   same chat concurrently. Locks are released on completion, error, timeout,
   abort, and stream cancellation. Review times out after 15 minutes,
   implementation after 60, and questions after 10.
-- **Ask is read-only.** `/api/ask` runs Claude with `--allowedTools Read Grep
-  Glob` — it can read and search the repo to answer, but has no ability to edit
-  files or run commands.
-- **Implement is a deliberate, powerful action.** `/api/implement` runs Claude
-  Code with `--permission-mode bypassPermissions`, so it edits files and runs
-  commands unattended. To contain that, it always works on a dedicated
+- **Ask is read-only.** `/api/ask` limits Claude to `Read`, `Grep`, and `Glob`,
+  and runs Codex in its read-only sandbox. Both can research the repo without
+  editing it.
+- **Implement is a deliberate, powerful action.** `/api/implement` grants the
+  selected agent unattended implementation access, so it can edit files and
+  run commands. To contain that, it always works on a dedicated
   `plan/<slug>` branch (created/checked out first) and refuses to run on a plan
   that isn't inside a git repository — so the generated work is isolated and
   easy to review, diff, or discard. **Stop** aborts the request, which kills the
-  Claude process.
+  provider process.
 
 ## Project layout
 
@@ -273,14 +281,16 @@ src/
 ├── lib/
 │   ├── plan-file.ts      Absolute-path validation + size/type guard (shared by routes)
 │   ├── plan-document.ts  Client-side Markdown → blocks/outline/@me-comment parser
-│   └── claude-cli.ts     Manual account/chat validation + Claude/git helpers
+│   ├── agent-cli.ts      Provider-neutral account/chat validation and locking
+│   ├── claude-cli.ts     Claude profiles, sessions, usage, and CLI helpers
+│   └── codex-cli.ts      Codex homes, threads, rate limits, and CLI helpers
 └── app/
     ├── api/
-    │   ├── claude/sessions/route.ts  GET repository chats for one account
+    │   ├── agents/sessions/route.ts  GET provider chats and usage for one account
     │   ├── document/
     │   │   ├── route.ts        POST read a plan · PATCH insert an @me note (atomic)
     │   │   └── pick/route.ts   POST native macOS file chooser (osascript)
-    │   ├── review/route.ts     POST run Claude Code /plan-review for the plan
+    │   ├── review/route.ts     POST resolve review notes with the selected agent
     │   ├── implement/route.ts  POST implement the plan on a branch (streamed NDJSON)
     │   └── ask/route.ts        POST read-only Q&A about the plan (streamed NDJSON)
     ├── layout.tsx        Fonts, no-flash theme bootstrap, document metadata
@@ -301,23 +311,25 @@ All routes use the Node.js runtime.
   disk.
 - **`POST /api/document/pick`** — no body. Opens the native macOS file chooser
   and returns `{ path }` (or `204` if cancelled, `501` off macOS).
-- **`GET /api/claude/sessions`** — query `{ path, accountId }`. Returns safe
-  chat metadata for that account and repository, including the latest model and
-  context-token usage when available; transcript contents and paths are never
-  returned.
-- **`POST /api/review`** — body `{ path, accountId, sessionId?, newChat }`.
-  Runs Claude Code `/plan-review <path>` and returns `{ ok, output, sessionId }`. Returns `409` if a review
+- **`GET /api/agents/sessions`** — query `{ path, provider, accountId }`.
+  Returns safe repository chat metadata, latest context-token usage, and the
+  provider's reported 5-hour/7-day utilization and reset times. Transcript
+  contents, credentials, and filesystem paths are never returned.
+- **`POST /api/review`** — body
+  `{ path, provider, accountId, sessionId?, newChat }`. Resolves the plan's
+  review notes and returns `{ ok, output, sessionId }`. Returns `409` if a review
   of that plan is already running.
-- **`POST /api/implement`** — body `{ path, accountId, sessionId?, newChat }`. Checks out a `plan/<slug>` branch
-  and runs Claude Code with `bypassPermissions`, streaming newline-delimited
+- **`POST /api/implement`** — body
+  `{ path, provider, accountId, sessionId?, newChat }`. Checks out a
+  `plan/<slug>` branch and runs the selected agent, streaming newline-delimited
   JSON events as it works: `{type:"status"|"assistant"|"tool"}`, then
   `{type:"result", text, ok}`, and finally `{type:"done", branch, sessionId}` (or
   `{type:"error", error}`). Returns `400` if the plan isn't in a git repo and
   `409` if that plan or selected chat is already running a command. Aborting
   the request stops the run and releases its locks.
 - **`POST /api/ask`** — body
-  `{ path, question, selection?, accountId, sessionId?, newChat }`. Runs
-  Claude Code read-only (`Read`/`Grep`/`Glob`) and streams newline-delimited
+  `{ path, question, selection?, provider, accountId, sessionId?, newChat }`.
+  Runs the selected agent read-only and streams newline-delimited
   JSON: `{type:"research"}` for each file/search, `{type:"answer", text}` chunks,
   then `{type:"done", sessionId}` (or `{type:"error", error}`). Pass the returned
   `sessionId` back to continue the same conversation. Returns `409` if the

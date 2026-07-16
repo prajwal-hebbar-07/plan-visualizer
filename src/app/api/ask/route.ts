@@ -1,9 +1,8 @@
 /**
- * POST /api/ask — answer a question about a plan with Claude Code (read-only).
+ * POST /api/ask — answer a question about a plan with Claude Code or Codex (read-only).
  *
- * Runs `claude --print --output-format stream-json` restricted to read-only
- * tools (`--allowedTools Read Grep Glob`) so Claude can research the repo but
- * cannot edit anything. Answers stream back as newline-delimited JSON:
+ * Runs the selected provider with read-only permissions so it can research the
+ * repo but cannot edit anything. Answers stream back as newline-delimited JSON:
  *
  *   { "type": "research", "text": "..." }        a file/search Claude looked at
  *   { "type": "answer",   "text": "..." }        answer text (append in order)
@@ -12,20 +11,25 @@
  *
  * The account and existing/New chat are chosen manually in the UI. This route
  * always interprets the request as a read-only question command regardless of
- * what previously ran in the selected chat. The prompt is written to stdin (not
- * argv) so the variadic `--allowedTools` can't swallow it. Aborting releases the
- * shared chat lock after terminating the child process.
+ * what previously ran in the selected chat. For Claude, the prompt is written
+ * to stdin so the variadic `--allowedTools` cannot swallow it. Aborting releases
+ * the shared chat lock after terminating the child process.
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { resolvePlanPath } from "@/lib/plan-file";
+import { acquireAgentSession, AgentContextError, resolveAgentRunContext } from "@/lib/agent-cli";
 import {
-  acquireClaudeSession,
   claudeSessionArgs,
   claudeEnv,
-  ClaudeContextError,
   findClaudeBinary,
-  resolveClaudeRunContext,
 } from "@/lib/claude-cli";
+import {
+  codexEnv,
+  codexEventError,
+  codexExecArgs,
+  findCodexBinary,
+  parseCodexJsonLine,
+} from "@/lib/codex-cli";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -50,7 +54,7 @@ type ClientEvent =
   | { type: "answer"; text: string }
   | { type: "error"; error: string }
   | { type: "session"; sessionId: string }
-  | { type: "done"; sessionId: string };
+  | { type: "done"; sessionId?: string };
 
 function summarizeToolUse(name: string, input: unknown): string {
   if (!input || typeof input !== "object") return name;
@@ -65,11 +69,12 @@ export async function POST(request: Request) {
   let filePath: string;
   let question: string;
   let selection: string | undefined;
-  let context: Awaited<ReturnType<typeof resolveClaudeRunContext>>;
+  let context: Awaited<ReturnType<typeof resolveAgentRunContext>>;
 
   try {
     const body = (await request.json()) as {
       path?: unknown;
+      provider?: unknown;
       question?: unknown;
       selection?: unknown;
       sessionId?: unknown;
@@ -87,28 +92,28 @@ export async function POST(request: Request) {
     if (typeof body.selection === "string" && body.selection.trim()) {
       selection = body.selection.trim().slice(0, 2000);
     }
-    context = await resolveClaudeRunContext(filePath, body);
+    context = await resolveAgentRunContext(filePath, body);
   } catch (error) {
-    if (error instanceof ClaudeContextError) {
+    if (error instanceof AgentContextError) {
       return Response.json({ error: error.message, code: error.code }, { status: error.status });
     }
     const message = error instanceof Error ? error.message : "The request is invalid.";
     return Response.json({ error: message }, { status: 400 });
   }
 
-  const claudeBinary = await findClaudeBinary();
   let releaseSession: () => void;
   try {
-    releaseSession = acquireClaudeSession(context, "question");
+    releaseSession = acquireAgentSession(context, "question");
   } catch (error) {
-    if (error instanceof ClaudeContextError) {
+    if (error instanceof AgentContextError) {
       return Response.json({ error: error.message, code: error.code }, { status: error.status });
     }
     throw error;
   }
 
-  const env = claudeEnv(context.configDir);
-  const sessionId = context.sessionId;
+  const binary = context.provider === "claude" ? await findClaudeBinary() : await findCodexBinary();
+  const env = context.provider === "claude" ? claudeEnv(context.configDir) : codexEnv(context.configDir);
+  let sessionId = context.provider === "claude" ? context.sessionId : "";
 
   const encoder = new TextEncoder();
   let child: ChildProcess | null = null;
@@ -135,9 +140,26 @@ export async function POST(request: Request) {
         } catch {}
       };
 
-      send({ type: "session", sessionId });
+      if (context.provider === "claude") send({ type: "session", sessionId });
 
       const transform = (line: string) => {
+        if (context.provider === "codex") {
+          const event = parseCodexJsonLine(line);
+          if (!event) return;
+          if (event.type === "thread.started" && event.thread_id) {
+            sessionId = event.thread_id;
+            send({ type: "session", sessionId });
+          } else if (event.type === "item.completed" && event.item?.type === "agent_message" && event.item.text) {
+            answered = true;
+            send({ type: "answer", text: event.item.text });
+          } else if (event.type === "item.completed" && event.item?.type === "command_execution") {
+            send({ type: "research", text: `$ ${event.item.command || "command"}`.slice(0, 300) });
+          } else if (event.type === "turn.failed" || event.type === "error") {
+            const message = codexEventError(event);
+            if (message) send({ type: "error", error: message });
+          }
+          return;
+        }
         let parsed: unknown;
         try {
           parsed = JSON.parse(line);
@@ -167,28 +189,30 @@ export async function POST(request: Request) {
 
       try {
         child = spawn(
-          claudeBinary,
-          [
-            "--print",
-            "--output-format",
-            "stream-json",
-            "--verbose",
-            "--allowedTools",
-            "Read",
-            "Grep",
-            "Glob",
-            ...claudeSessionArgs(context),
-          ],
+          binary,
+          context.provider === "claude"
+            ? [
+                "--print",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--allowedTools",
+                "Read",
+                "Grep",
+                "Glob",
+                ...claudeSessionArgs(context),
+              ]
+            : codexExecArgs(context, "question", askPrompt(filePath, question, selection)),
           { cwd: context.cwd, env },
         );
       } catch (error) {
         releaseSession();
-        send({ type: "error", error: error instanceof Error ? error.message : "Claude could not start." });
-        send({ type: "done", sessionId });
+        send({ type: "error", error: error instanceof Error ? error.message : "The agent could not start." });
+        send({ type: "done", ...(sessionId ? { sessionId } : {}) });
         finish();
         return;
       }
-      child.stdin?.end(askPrompt(filePath, question, selection));
+      if (context.provider === "claude") child.stdin?.end(askPrompt(filePath, question, selection));
 
       let stoppedByClient = false;
       let timedOut = false;
@@ -243,10 +267,10 @@ export async function POST(request: Request) {
           type: "error",
           error:
             error.code === "ENOENT"
-              ? "Claude Code was not found. Set CLAUDE_BIN to the Claude executable and restart the app."
+              ? "The selected agent CLI was not found. Configure CLAUDE_BIN or CODEX_BIN and restart the app."
               : error.message,
         });
-        send({ type: "done", sessionId });
+        send({ type: "done", ...(sessionId ? { sessionId } : {}) });
         finish();
       });
 
@@ -258,16 +282,16 @@ export async function POST(request: Request) {
         if (!answered && resultText.trim()) send({ type: "answer", text: resultText });
 
         if (timedOut) {
-          send({ type: "error", error: "Claude did not answer within 10 minutes." });
+          send({ type: "error", error: "The agent did not answer within 10 minutes." });
         } else if (stoppedByClient) {
           // client asked to stop; nothing more to say
         } else if (code !== 0 && !answered && !resultText.trim()) {
           send({
             type: "error",
-            error: stderrTail.trim() || `Claude exited with code ${code ?? "unknown"}.`,
+            error: stderrTail.trim() || `The agent exited with code ${code ?? "unknown"}.`,
           });
         }
-        send({ type: "done", sessionId });
+        send({ type: "done", ...(sessionId ? { sessionId } : {}) });
         finish();
       });
     },
