@@ -1,7 +1,7 @@
 # Plan Visualizer
 
-A local-first review surface for Markdown implementation plans. Point it at an
-absolute file path, read the plan as a clean, editorial document, and attach
+A local-first review surface for Markdown implementation plans. Choose a local
+plan file, read it as a clean, editorial document, and attach
 review comments that are written **directly back into the original file** as
 `<!-- @me -->` HTML markers. When you're ready, hand the annotated plan to
 Claude Code to resolve every note in place.
@@ -59,8 +59,8 @@ file with the Node filesystem API, and stores no database and no account.
 - **Manual Claude context.** Choose Claude account 1 or 2, then explicitly pick
   an existing repository chat or **New chat**. Ask, review, and implementation
   use that choice but retain their own command-specific permissions. The
-  selected chat shows its latest token usage and warns when it is time to open
-  a fresh chat.
+  selected chat shows its context percentage in the navbar so it is clear when
+  to open a fresh chat.
 - **Safe writes.** Saves are atomic and guarded by the file's modification time
   and the exact source text of the annotated block, so a plan edited elsewhere
   is never silently clobbered.
@@ -99,19 +99,19 @@ Plan text is parsed **client-side** by `src/lib/plan-document.ts` into a flat
 list of blocks — content blocks (paragraphs, headings, fenced code) and comment
 blocks (parsed `@me` markers) — plus a heading outline, title, word count, and
 comment count. The renderer uses that model to lay out the document, position
-the hover/selection controls, and list pending notes in the review panel.
+the hover/selection controls, and list pending notes in the Review & Ask
+slide-over.
 
 ## The review workflow
 
-1. **Open** a plan by pasting an absolute path or using **Browse…** (the native
-   macOS file chooser). The last opened path and your theme choice are
+1. **Open** a plan using **Browse…** (the native macOS file chooser). The last
+   opened path and your theme choice are
    remembered in the browser; `?path=/abs/path/plan.md` opens a file on load.
 2. **Annotate.** Hover a block and click the margin comment control, or select
    text (≥ 3 characters) and click the **Comment** pill. Write what should
    change and save — the note is inserted into the file next to that block.
-3. Each saved note renders inline in the document *and* in the right-hand
-   **Review notes** panel, tagged **Pending review**. Click a card to jump to
-   its location.
+3. Each saved note renders inline in the document *and* in the **Review & Ask**
+   slide-over, tagged **Pending review**. Click a card to jump to its location.
 4. **Run plan review.** Claude Code opens the plan, resolves every `@me` note
    (editing the plan and removing the markers as your `/plan-review` workflow
    dictates), and the app reloads the file so you see the result.
@@ -157,8 +157,8 @@ selection (if any) and the comment body.
 
 - **Node.js 20+** (built with 24) and npm.
 - **macOS** for the native **Browse…** file chooser (it shells out to
-  `osascript`). On other platforms, paste an absolute path instead — everything
-  else works cross-platform.
+  `osascript`). On other platforms, open an absolute path with the `?path=` URL
+  parameter — everything else works cross-platform.
 - **Claude Code** for the **Run plan review** and **Implement plan** buttons,
   with a profile that contains the `plan-review` skill. Optional otherwise.
 - **Git**: the plan must live inside a git repository to use **Implement plan**
@@ -178,30 +178,32 @@ server). Both commands bind to `127.0.0.1`.
 
 ## Using the app
 
-- **Open a file:** paste an absolute `.md` / `.markdown` path in the header and
-  press Enter (or **Preview**), or click **Browse…** / **Choose a plan file**.
-- **Choose Claude context:** select Claude account 1 or 2, then choose an
-  existing repository chat or **New chat**. No account or chat is preselected.
-  The context meter uses Claude's latest recorded token usage and refreshes
-  after each command.
+- **Open a file:** click **Browse** in the document metadata row or **Choose a
+  plan file** on the empty state.
+- **Choose Claude context:** use the custom account and chat menus in the
+  navbar to choose an existing repository chat or **New chat**. No account or
+  chat is preselected. The circular indicator shows the latest context usage
+  percentage and refreshes after each command; click it to refresh manually.
 - **Comment on a block:** hover it and click the round control that appears in
   the left margin.
 - **Comment on a selection:** select text in the document and click the floating
   **Comment** pill.
-- **Save a note:** write it in the composer and click **Save note** (or press
-  `⌘↵` / `Ctrl+↵`). Comments are capped at 4,000 characters, selections at
-  2,000.
-- **Run the review:** open the **Review notes** panel and click **Run plan
-  review**. The button is disabled while Claude is working; the plan reloads
-  automatically when it finishes.
-- **Implement the plan:** in the **Implement** section click **Implement plan**.
+- **Save a note:** write it in the centered comment modal and click **Save
+  note** (or press `⌘↵` / `Ctrl+↵`). Comments are capped at 4,000 characters,
+  selections at 2,000.
+- **Run the review:** click **Run review** in the navbar or use the half-screen
+  **Review & Ask** slide-over. The action is disabled while Claude is working;
+  the plan reloads automatically when it finishes.
+- **Implement the plan:** click **Implement** in the navbar or use the
+  **Implement** section in the slide-over.
   Claude works on a fresh `plan/<slug>` branch and its progress streams into a
   live log; click **Stop implementation** to end it early. Editing is disabled
   while a run is in progress. The plan is reloaded when the run ends.
 - **Ask about the plan:** switch to the **Ask about plan** tab and type a
   question (Enter to send, Shift+Enter for a newline). Answers stream in and the
-  thread keeps context across follow-ups. Selecting text and clicking **Ask** on
-  the pill attaches that excerpt to your next question.
+  thread keeps context across follow-ups. Selecting text and clicking **Ask**
+  opens a centered question modal; after submission, the answer streams in the
+  Ask tab.
 - **Reload from disk:** use the reload control in the document meta bar. If the
   file changed underneath you, the app shows a conflict banner instead of
   overwriting your view.
@@ -212,7 +214,7 @@ server). Both commands bind to `127.0.0.1`.
 
 | Shortcut        | Action                                            |
 | --------------- | ------------------------------------------------- |
-| `⌘O` / `Ctrl+O` | Focus and select the path input                   |
+| `⌘O` / `Ctrl+O` | Open the native plan file chooser                 |
 | `⌘↵` / `Ctrl+↵` | Save the note you're composing                    |
 | `Esc`           | Close the composer / dismiss the selection pill   |
 

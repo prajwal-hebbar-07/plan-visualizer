@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -50,6 +50,17 @@ type ClaudeSessionOption = {
 type ClaudeChatChoice =
   | { kind: "new"; title: string }
   | { kind: "existing"; id: string; title: string };
+
+type SelectOption = {
+  value: string;
+  label: string;
+  meta?: string;
+};
+
+const CLAUDE_ACCOUNT_OPTIONS: SelectOption[] = [
+  { value: "claude-one", label: "Account 1" },
+  { value: "claude-two", label: "Account 2" },
+];
 
 type IconName =
   | "logo"
@@ -284,6 +295,113 @@ function formatTokens(tokens: number) {
   return tokens.toLocaleString();
 }
 
+function CustomSelect({
+  value,
+  options,
+  placeholder,
+  onChange,
+  disabled = false,
+  ariaLabel,
+  className = "",
+}: {
+  value: string;
+  options: SelectOption[];
+  placeholder: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+  ariaLabel: string;
+  className?: string;
+}) {
+  const id = useId();
+  const rootRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const selected = options.find((option) => option.value === value);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    window.document.addEventListener("pointerdown", onPointerDown);
+    return () => window.document.removeEventListener("pointerdown", onPointerDown);
+  }, [open]);
+
+  const choose = (option: SelectOption) => {
+    onChange(option.value);
+    setOpen(false);
+    window.setTimeout(() => buttonRef.current?.focus(), 0);
+  };
+
+  const openMenu = () => {
+    const selectedIndex = options.findIndex((option) => option.value === value);
+    setActiveIndex(selectedIndex >= 0 ? selectedIndex : 0);
+    setOpen(true);
+  };
+
+  return (
+    <div
+      ref={rootRef}
+      className={`pv-custom-select${open ? " is-open" : ""}${className ? ` ${className}` : ""}`}
+      onKeyDown={(event) => {
+        if (disabled) return;
+        if (event.key === "Escape" && open) {
+          event.preventDefault();
+          setOpen(false);
+          buttonRef.current?.focus();
+        } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          if (!open) {
+            openMenu();
+            return;
+          }
+          const direction = event.key === "ArrowDown" ? 1 : -1;
+          setActiveIndex((current) => (current + direction + options.length) % options.length);
+        } else if ((event.key === "Enter" || event.key === " ") && open) {
+          event.preventDefault();
+          const option = options[activeIndex];
+          if (option) choose(option);
+        }
+      }}
+    >
+      <button
+        ref={buttonRef}
+        type="button"
+        className="pv-custom-select-trigger"
+        onClick={() => (open ? setOpen(false) : openMenu())}
+        disabled={disabled}
+        role="combobox"
+        aria-label={ariaLabel}
+        aria-controls={`${id}-listbox`}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+      >
+        <span className={selected ? "" : "is-placeholder"}>{selected?.label ?? placeholder}</span>
+        <Icon name="chevron" size={10} />
+      </button>
+      {open && (
+        <div id={`${id}-listbox`} className="pv-custom-select-menu" role="listbox" aria-label={ariaLabel}>
+          {options.map((option, index) => (
+            <button
+              key={option.value}
+              type="button"
+              role="option"
+              aria-selected={option.value === value}
+              className={`${option.value === value ? "is-selected" : ""}${index === activeIndex ? " is-active" : ""}`}
+              onMouseEnter={() => setActiveIndex(index)}
+              onClick={() => choose(option)}
+            >
+              <span>{option.label}</span>
+              {option.meta && <small>{option.meta}</small>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MarkdownBlock({ block }: { block: ContentBlock }) {
   return (
     <ReactMarkdown
@@ -308,11 +426,9 @@ function MarkdownBlock({ block }: { block: ContentBlock }) {
 }
 
 export default function Home() {
-  const [pathInput, setPathInput] = useState("");
   const [document, setDocument] = useState<DocumentData | null>(null);
   const [loadedAt, setLoadedAt] = useState(0);
   const [now, setNow] = useState(() => Date.now());
-  const [opening, setOpening] = useState(false);
   const [picking, setPicking] = useState(false);
   const [reloading, setReloading] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
@@ -328,9 +444,12 @@ export default function Home() {
   const [implementError, setImplementError] = useState<string | null>(null);
   const [implementBranch, setImplementBranch] = useState<string | null>(null);
   const [sidebarTab, setSidebarTab] = useState<"review" | "ask">("review");
+  const [workPanelOpen, setWorkPanelOpen] = useState(false);
   const [askThread, setAskThread] = useState<AskTurn[]>([]);
   const [askInput, setAskInput] = useState("");
   const [askSelection, setAskSelection] = useState("");
+  const [selectionAskOpen, setSelectionAskOpen] = useState(false);
+  const [selectionAskQuestion, setSelectionAskQuestion] = useState("");
   const [asking, setAsking] = useState(false);
   const [claudeAccount, setClaudeAccount] = useState<ClaudeAccountId | null>(null);
   const [claudeAccountLabel, setClaudeAccountLabel] = useState("");
@@ -345,7 +464,6 @@ export default function Home() {
   const [hoveredBlockId, setHoveredBlockId] = useState<string | null>(null);
   const [gutterTop, setGutterTop] = useState<number | null>(null);
 
-  const pathRef = useRef<HTMLInputElement>(null);
   const commentRef = useRef<HTMLTextAreaElement>(null);
   const surfaceRef = useRef<HTMLElement>(null);
   const documentPathRef = useRef<string | null>(null);
@@ -357,6 +475,7 @@ export default function Home() {
   const sessionListAbort = useRef<AbortController | null>(null);
   const askThreadRef = useRef<HTMLDivElement>(null);
   const askInputRef = useRef<HTMLTextAreaElement>(null);
+  const selectionAskInputRef = useRef<HTMLTextAreaElement>(null);
 
   const busy = reviewing || implementing;
   const claudeBusy = reviewing || implementing || asking;
@@ -394,6 +513,46 @@ export default function Home() {
     };
   }, [selectedClaudeSession]);
 
+  const navbarContextPercent = claudeChat?.kind === "new" ? 0 : contextUsage?.percent ?? null;
+  const navbarContextLevel = claudeChat?.kind === "new" ? "healthy" : contextUsage?.level ?? "unknown";
+  const navbarContextTitle = claudeSessionsError
+    ? claudeSessionsError
+    : claudeChat?.kind === "new"
+      ? "Fresh chat · 0% context used · Click to refresh chats"
+      : contextUsage
+        ? `${contextUsage.percent ?? "Unknown"}% context used${
+            contextUsage.remaining !== null ? ` · ${formatTokens(contextUsage.remaining)} tokens remaining` : ""
+          } · Click to refresh`
+        : claudeChat
+          ? "Context usage is not available yet · Click to refresh"
+          : "Choose a Claude chat to see context usage";
+
+  const claudeChatOptions = useMemo<SelectOption[]>(() => {
+    if (!claudeAccount) return [];
+    const options: SelectOption[] = [{ value: "__new__", label: "New chat", meta: "Start with fresh context" }];
+    for (const session of claudeSessions) {
+      const percent =
+        session.contextTokens !== undefined && session.contextWindow
+          ? Math.min(100, Math.round((session.contextTokens / session.contextWindow) * 100))
+          : null;
+      options.push({
+        value: session.id,
+        label: session.title,
+        meta:
+          session.contextTokens !== undefined
+            ? `${formatTokens(session.contextTokens)} tokens${percent !== null ? ` · ${percent}% used` : ""}`
+            : "No usage recorded yet",
+      });
+    }
+    if (
+      claudeChat?.kind === "existing" &&
+      !options.some((option) => option.value === claudeChat.id)
+    ) {
+      options.splice(1, 0, { value: claudeChat.id, label: claudeChat.title, meta: "Selected chat" });
+    }
+    return options;
+  }, [claudeAccount, claudeChat, claudeSessions]);
+
   const parsed = useMemo(() => (document ? parsePlan(document.content) : null), [document]);
 
   useEffect(() => {
@@ -428,13 +587,10 @@ export default function Home() {
   const openDocument = useCallback(async (requestedPath: string): Promise<boolean> => {
     const cleanPath = requestedPath.trim();
     if (!cleanPath) {
-      setOpenError("Enter the absolute path to a plan file.");
-      pathRef.current?.focus();
+      setOpenError("Choose a Markdown plan to open.");
       return false;
     }
 
-    setPathInput(cleanPath);
-    setOpening(true);
     setOpenError(null);
     try {
       const response = await fetch("/api/document", {
@@ -448,7 +604,6 @@ export default function Home() {
       setDocument(data);
       setLoadedAt(Date.now());
       setNow(Date.now());
-      setPathInput(data.path);
       setSelectedBlock(null);
       setSelectedText("");
       setSelectionPrompt(null);
@@ -466,6 +621,9 @@ export default function Home() {
         setAskThread([]);
         setAskInput("");
         setAskSelection("");
+        setSelectionAskOpen(false);
+        setSelectionAskQuestion("");
+        setWorkPanelOpen(false);
         setStepsOpen({});
         setClaudeAccount(null);
         setClaudeAccountLabel("");
@@ -479,8 +637,6 @@ export default function Home() {
     } catch (error) {
       setOpenError(error instanceof Error ? error.message : "Unable to open the plan.");
       return false;
-    } finally {
-      setOpening(false);
     }
   }, []);
 
@@ -501,6 +657,21 @@ export default function Home() {
     setComment("");
     setCommentError(null);
   }, []);
+
+  const closeSelectionAsk = useCallback(() => {
+    setSelectionAskOpen(false);
+    setSelectionAskQuestion("");
+    setAskSelection("");
+  }, []);
+
+  useEffect(() => {
+    if (!workPanelOpen && !selectedBlock && !selectionAskOpen) return;
+    const previousOverflow = window.document.body.style.overflow;
+    window.document.body.style.overflow = "hidden";
+    return () => {
+      window.document.body.style.overflow = previousOverflow;
+    };
+  }, [workPanelOpen, selectedBlock, selectionAskOpen]);
 
   const saveComment = useCallback(async () => {
     if (!document || !selectedBlock || !comment.trim() || saving || busy) return;
@@ -537,28 +708,6 @@ export default function Home() {
       setSaving(false);
     }
   }, [comment, document, busy, saving, selectedBlock, selectedText, closeComposer, showToast]);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "o") {
-        event.preventDefault();
-        pathRef.current?.focus();
-        pathRef.current?.select();
-        return;
-      }
-      if (event.key === "Escape") {
-        if (selectedBlock) closeComposer();
-        else if (selectionPrompt) setSelectionPrompt(null);
-        return;
-      }
-      if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && selectedBlock && comment.trim()) {
-        event.preventDefault();
-        void saveComment();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [selectedBlock, selectionPrompt, comment, closeComposer, saveComment]);
 
   // Selection pill tracking
   useEffect(() => {
@@ -681,16 +830,6 @@ export default function Home() {
     };
   }, [document]);
 
-  const openDocumentAndToast = useCallback(
-    async (path: string) => {
-      const ok = await openDocument(path);
-      if (ok) showToast(`Opened ${filename(path.trim())}`);
-    },
-    [openDocument, showToast],
-  );
-
-  const openPathAction = () => void openDocumentAndToast(pathInput);
-
   const toggleTheme = () => {
     const current = window.document.documentElement.getAttribute("data-pv-theme");
     const next = current === "dark" ? "light" : "dark";
@@ -717,6 +856,39 @@ export default function Home() {
       setPicking(false);
     }
   }, [openDocument, picking, showToast]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "o") {
+        event.preventDefault();
+        void pickPlan();
+        return;
+      }
+      if (event.key === "Escape") {
+        if (selectionAskOpen) closeSelectionAsk();
+        else if (selectedBlock) closeComposer();
+        else if (workPanelOpen) setWorkPanelOpen(false);
+        else if (selectionPrompt) setSelectionPrompt(null);
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && selectedBlock && comment.trim()) {
+        event.preventDefault();
+        void saveComment();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [
+    selectedBlock,
+    selectionPrompt,
+    selectionAskOpen,
+    workPanelOpen,
+    comment,
+    closeComposer,
+    closeSelectionAsk,
+    saveComment,
+    pickPlan,
+  ]);
 
   const clearClaudeOutput = useCallback(() => {
     setAskThread([]);
@@ -1065,10 +1237,21 @@ export default function Home() {
   );
 
   const askAboutSelection = useCallback((text: string) => {
-    setSidebarTab("ask");
     setAskSelection(text);
-    window.setTimeout(() => askInputRef.current?.focus(), 60);
+    setSelectionAskQuestion("");
+    setSelectionAskOpen(true);
+    window.setTimeout(() => selectionAskInputRef.current?.focus(), 60);
   }, []);
+
+  const submitSelectionAsk = useCallback(() => {
+    const question = selectionAskQuestion.trim();
+    if (!question || !askSelection || !claudeReady || claudeBusy) return;
+    setSelectionAskOpen(false);
+    setSelectionAskQuestion("");
+    setSidebarTab("ask");
+    setWorkPanelOpen(true);
+    void runAsk(question, askSelection);
+  }, [selectionAskQuestion, askSelection, claudeReady, claudeBusy, runAsk]);
 
   const jumpTo = (id: string) => {
     const el = window.document.getElementById(id);
@@ -1098,61 +1281,107 @@ export default function Home() {
             <span className="pv-brand-name">Plan Visualizer</span>
           </Link>
 
-          <div className="pv-path">
-            <span className="pv-path-icon">
-              <Icon name="folder" size={13} />
-            </span>
-            <input
-              ref={pathRef}
-              className={`pv-path-input${openError ? " is-error" : ""}`}
-              aria-label="Absolute path to a Markdown plan file"
-              spellCheck={false}
-              value={pathInput}
-              onChange={(event) => {
-                setPathInput(event.target.value);
-                setOpenError(null);
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") openPathAction();
-              }}
-              placeholder="/absolute/path/to/plans/plan-feature.md"
-            />
-            <kbd className="pv-kbd">⌘O</kbd>
-            <button
-              className="pv-browse"
-              type="button"
-              onClick={() => void pickPlan()}
-              disabled={picking}
-              title="Open the native file picker"
-            >
-              <Icon name="folder" size={12} />
-              {picking ? "Opening…" : "Browse"}
-            </button>
-          </div>
-
-          <button className="pv-btn-primary" type="button" onClick={openPathAction} disabled={opening}>
-            {opening ? "Opening…" : "Preview"}
-          </button>
-
-          <div className="pv-divider" />
+          {!document && <span className="pv-header-spacer" />}
 
           {document && (
-            <label className="pv-navbar-account">
-              <span>Claude account</span>
-              <select
-                value={claudeAccount ?? ""}
-                onChange={(event) => {
-                  const accountId = event.target.value as ClaudeAccountId | "";
-                  if (accountId) void chooseClaudeAccount(accountId);
-                }}
-                disabled={claudeBusy}
-                aria-label="Choose Claude account"
-              >
-                <option value="">Choose account…</option>
-                <option value="claude-one">Account 1</option>
-                <option value="claude-two">Account 2</option>
-              </select>
-            </label>
+            <div className="pv-navbar-actions">
+              <div className="pv-navbar-claude">
+                <div className="pv-navbar-account" title={claudeAccountLabel || undefined}>
+                  <span>Claude account</span>
+                  <CustomSelect
+                    value={claudeAccount ?? ""}
+                    options={CLAUDE_ACCOUNT_OPTIONS}
+                    placeholder="Choose account…"
+                    onChange={(value) => void chooseClaudeAccount(value as ClaudeAccountId)}
+                    disabled={claudeBusy}
+                    ariaLabel="Choose Claude account"
+                    className="pv-account-select"
+                  />
+                </div>
+                <CustomSelect
+                  value={claudeChat ? (claudeChat.kind === "new" ? "__new__" : claudeChat.id) : ""}
+                  options={claudeChatOptions}
+                  placeholder={
+                    !claudeAccount
+                      ? "Choose account first…"
+                      : claudeSessionsLoading
+                        ? "Loading chats…"
+                        : claudeSessionsError
+                          ? "Chats unavailable"
+                          : "Choose chat…"
+                  }
+                  onChange={chooseClaudeChat}
+                  disabled={!claudeAccount || claudeBusy || claudeSessionsLoading}
+                  ariaLabel="Choose Claude chat"
+                  className="pv-navbar-chat-select"
+                />
+                <button
+                  type="button"
+                  className={`pv-navbar-context is-${navbarContextLevel}${claudeSessionsError ? " is-error" : ""}`}
+                  onClick={() => void refreshClaudeSessions()}
+                  disabled={!claudeAccount || claudeBusy || claudeSessionsLoading}
+                  title={navbarContextTitle}
+                  aria-label={navbarContextTitle}
+                >
+                  <svg viewBox="0 0 32 32" aria-hidden="true">
+                    <circle className="track" cx="16" cy="16" r="13" pathLength="100" />
+                    {navbarContextPercent !== null && (
+                      <circle
+                        className="value"
+                        cx="16"
+                        cy="16"
+                        r="13"
+                        pathLength="100"
+                        strokeDasharray={`${navbarContextPercent} 100`}
+                      />
+                    )}
+                  </svg>
+                  <span>
+                    {claudeSessionsError ? "!" : navbarContextPercent === null ? "—" : `${navbarContextPercent}%`}
+                  </span>
+                </button>
+              </div>
+              <div className="pv-navbar-commands">
+                <span className="pv-navbar-separator" />
+                <button
+                  type="button"
+                  className={`pv-quick-action${reviewing ? " is-running" : ""}`}
+                  onClick={() => void runPlanReview()}
+                  disabled={claudeBusy || !claudeReady}
+                  title={!claudeReady ? "Choose a Claude account and chat first" : "Run plan review"}
+                >
+                  <Icon name={reviewing ? "spinner" : "comment"} size={12} />
+                  <span>{reviewing ? "Reviewing…" : "Run review"}</span>
+                </button>
+                <button
+                  type="button"
+                  className={`pv-quick-action pv-quick-implement${implementing ? " is-running" : ""}`}
+                  onClick={() => (implementing ? stopImplement() : void runImplement())}
+                  disabled={reviewing || asking || (!implementing && !claudeReady)}
+                  title={
+                    !claudeReady
+                      ? "Choose a Claude account and chat first"
+                      : implementing
+                        ? "Stop implementation"
+                        : "Implement plan"
+                  }
+                >
+                  <Icon name={implementing ? "spinner" : "branch"} size={12} />
+                  <span>{implementing ? "Stop" : "Implement"}</span>
+                </button>
+                <button
+                  type="button"
+                  className={`pv-work-open${workPanelOpen ? " is-active" : ""}`}
+                  onClick={() => setWorkPanelOpen(true)}
+                  aria-haspopup="dialog"
+                  aria-expanded={workPanelOpen}
+                >
+                  <Icon name="comment" size={12} />
+                  <span className="pv-work-open-label">Review &amp; Ask</span>
+                  {comments.length > 0 && <span className="pv-work-open-count">{comments.length}</span>}
+                </button>
+              </div>
+            </div>
           )}
 
           <button
@@ -1182,7 +1411,7 @@ export default function Home() {
               <Icon name="warning" size={13} />
               <span className="msg">{openError}</span>
               <span className="hint">
-                Enter an absolute path ending in <code>.md</code>, or use Browse.
+                Use Browse to choose another <code>.md</code> or <code>.markdown</code> plan.
               </span>
               <button type="button" onClick={() => setOpenError(null)} aria-label="Dismiss error">
                 <Icon name="close" size={11} />
@@ -1274,6 +1503,16 @@ export default function Home() {
               <span className="file-name">{filename(document.path)}</span>
               <span className="dir-path">{dirname(document.path)}</span>
               <span className="spacer" />
+              <button
+                className="pv-doc-browse"
+                type="button"
+                onClick={() => void pickPlan()}
+                disabled={picking}
+                title="Open another plan"
+              >
+                <Icon name="folder" size={12} />
+                <span>{picking ? "Opening…" : "Browse"}</span>
+              </button>
               <span className="loaded">{formatLoaded(loadedAt, now)}</span>
               <button
                 className={`pv-reload-btn${reloading ? " is-spinning" : ""}`}
@@ -1335,9 +1574,27 @@ export default function Home() {
               })}
             </article>
           </main>
+        </div>
+      )}
 
-          {/* Work panel */}
-          <aside className="pv-panel" aria-label="Work panel">
+      {/* ============ REVIEW / ASK SLIDE-OVER ============ */}
+      {document && workPanelOpen && (
+        <div
+          className="pv-work-overlay"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setWorkPanelOpen(false);
+          }}
+        >
+          <aside className="pv-panel" role="dialog" aria-modal="true" aria-label="Review and ask panel">
+            <div className="pv-panel-head">
+              <div>
+                <strong>Review &amp; Ask</strong>
+                <span>{filename(document.path)}</span>
+              </div>
+              <button type="button" onClick={() => setWorkPanelOpen(false)} aria-label="Close Review and Ask panel">
+                <Icon name="close" size={11} />
+              </button>
+            </div>
             <div className="pv-panel-tabs">
               <div className="pv-seg" role="tablist">
                 <button
@@ -1362,111 +1619,6 @@ export default function Home() {
                   Ask about plan
                 </button>
               </div>
-            </div>
-
-            <div className="pv-chat-context">
-              <div className="pv-chat-context-head">
-                <div>
-                  <strong>Chat context</strong>
-                  <span>{claudeAccountLabel || "Select an account in the navbar"}</span>
-                </div>
-                {claudeAccount && (
-                  <button
-                    type="button"
-                    className="pv-claude-refresh"
-                    onClick={() => void refreshClaudeSessions()}
-                    disabled={claudeBusy || claudeSessionsLoading}
-                    title="Refresh chats and context usage"
-                    aria-label="Refresh Claude chats and context usage"
-                  >
-                    <Icon name="reload" size={12} />
-                  </button>
-                )}
-              </div>
-
-              <select
-                id="pv-claude-chat"
-                value={claudeChat ? (claudeChat.kind === "new" ? "__new__" : claudeChat.id) : ""}
-                onChange={(event) => chooseClaudeChat(event.target.value)}
-                disabled={!claudeAccount || claudeBusy || claudeSessionsLoading}
-                aria-label="Choose Claude chat"
-              >
-                <option value="">
-                  {!claudeAccount
-                    ? "Choose an account first…"
-                    : claudeSessionsLoading
-                      ? "Loading chats…"
-                      : "Choose a chat…"}
-                </option>
-                {claudeAccount && !claudeSessionsLoading && <option value="__new__">＋ New chat</option>}
-                {claudeChat?.kind === "existing" &&
-                  !claudeSessions.some((session) => session.id === claudeChat.id) && (
-                    <option value={claudeChat.id}>{claudeChat.title}</option>
-                  )}
-                {claudeSessions.map((session) => (
-                  <option key={session.id} value={session.id}>
-                    {session.title}
-                  </option>
-                ))}
-              </select>
-
-              {claudeSessionsError && (
-                <div className="pv-claude-context-error" role="alert">
-                  {claudeSessionsError}
-                </div>
-              )}
-
-              {claudeChat?.kind === "new" ? (
-                <div className="pv-context-usage is-healthy">
-                  <div className="pv-context-usage-row">
-                    <strong>Fresh context</strong>
-                    <span>0 tokens used</span>
-                  </div>
-                  <div className="pv-context-meter" aria-hidden="true">
-                    <span style={{ width: "0%" }} />
-                  </div>
-                  <small>A new chat will start with the next Claude command.</small>
-                </div>
-              ) : contextUsage ? (
-                <div className={`pv-context-usage is-${contextUsage.level}`}>
-                  <div className="pv-context-usage-row">
-                    <strong>
-                      {contextUsage.level === "danger"
-                        ? "Open a new chat soon"
-                        : contextUsage.level === "warning"
-                          ? "Context is getting full"
-                          : "Context available"}
-                    </strong>
-                    <span>
-                      {formatTokens(contextUsage.used)}
-                      {contextUsage.limit ? ` / ${formatTokens(contextUsage.limit)}` : " tokens"}
-                      {contextUsage.percent !== null ? ` · ${contextUsage.percent}%` : ""}
-                    </span>
-                  </div>
-                  {contextUsage.percent !== null && (
-                    <div
-                      className="pv-context-meter"
-                      role="progressbar"
-                      aria-label="Claude chat context used"
-                      aria-valuemin={0}
-                      aria-valuemax={100}
-                      aria-valuenow={contextUsage.percent}
-                    >
-                      <span style={{ width: `${contextUsage.percent}%` }} />
-                    </div>
-                  )}
-                  <small>
-                    {selectedClaudeSession?.model ?? "Claude"}
-                    {contextUsage.remaining !== null
-                      ? ` · ${formatTokens(contextUsage.remaining)} tokens remaining`
-                      : " · usage from the latest turn"}
-                  </small>
-                </div>
-              ) : (
-                <div className="pv-context-empty">
-                  {claudeChat ? "Usage will appear after Claude replies in this chat." : "Choose a chat to see its context usage."}
-                </div>
-              )}
             </div>
 
             {sidebarTab === "review" ? (
@@ -1728,9 +1880,15 @@ export default function Home() {
         </div>
       )}
 
-      {/* ============ FLOATING COMPOSER ============ */}
+      {/* ============ REVIEW COMMENT MODAL ============ */}
       {document && selectedBlock && (
-        <div className="pv-composer" role="dialog" aria-label="Review note composer">
+        <div
+          className="pv-modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeComposer();
+          }}
+        >
+        <div className="pv-composer" role="dialog" aria-modal="true" aria-label="Review note composer">
           <div className="pv-composer-head">
             <Icon name="comment" size={13} />
             <strong>{selectedText ? "Note on selection" : "New review note"}</strong>
@@ -1792,6 +1950,73 @@ export default function Home() {
             >
               {saving ? "Saving…" : "Save note"}
             </button>
+          </div>
+        </div>
+        </div>
+      )}
+
+      {/* ============ DOCUMENT SELECTION ASK MODAL ============ */}
+      {document && selectionAskOpen && (
+        <div
+          className="pv-modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeSelectionAsk();
+          }}
+        >
+          <div className="pv-composer pv-selection-ask" role="dialog" aria-modal="true" aria-label="Ask about selection">
+            <div className="pv-composer-head">
+              <Icon name="chat" size={13} />
+              <strong>Ask about this selection</strong>
+              <button
+                className="pv-composer-close"
+                type="button"
+                onClick={closeSelectionAsk}
+                title="Close (Esc)"
+                aria-label="Close question composer"
+              >
+                <Icon name="close" size={11} />
+              </button>
+            </div>
+            <p className="pv-selection-ask-intro">
+              Your question will use the selected Claude chat in read-only mode.
+            </p>
+            <div className="pv-composer-quote">“{askSelection}”</div>
+            <textarea
+              ref={selectionAskInputRef}
+              className="pv-composer-textarea"
+              value={selectionAskQuestion}
+              onChange={(event) => setSelectionAskQuestion(event.target.value)}
+              onKeyDown={(event) => {
+                if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                  event.preventDefault();
+                  submitSelectionAsk();
+                }
+              }}
+              placeholder="What do you want to know about this selection?"
+              rows={5}
+              maxLength={4000}
+            />
+            {!claudeReady && (
+              <div className="pv-selection-ask-warning">
+                Choose a Claude account and chat from Review &amp; Ask before sending this question.
+              </div>
+            )}
+            <div className="pv-composer-actions">
+              <span className="pv-composer-meta">
+                {selectionAskQuestion.length} chars · <code>⌘↵</code> asks
+              </span>
+              <button className="pv-btn-cancel" type="button" onClick={closeSelectionAsk}>
+                Cancel
+              </button>
+              <button
+                className="pv-btn-save"
+                type="button"
+                onClick={submitSelectionAsk}
+                disabled={!selectionAskQuestion.trim() || !claudeReady || claudeBusy}
+              >
+                Ask Claude
+              </button>
+            </div>
           </div>
         </div>
       )}
